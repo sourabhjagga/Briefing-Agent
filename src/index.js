@@ -87,6 +87,7 @@ function startDashboardServer(database, whatsapp, telegramUser, scheduler, summa
     res.json({
       healthy: true,
       whatsapp: waStatus.isReady ? 'connected' : 'connecting',
+      whatsappQr: waStatus.qr || null,
       messagesToday: msgCount,
       targetGroups: waStatus.targetCount,
       uptime: Math.floor(process.uptime()),

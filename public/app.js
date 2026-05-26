@@ -467,6 +467,25 @@ function App() {
         </div>
       </header>
 
+      {/* WhatsApp QR scanner when disconnected */}
+      {sysStatus.whatsapp !== 'connected' && sysStatus.whatsappQr && (
+        <div className="panel-card" style={{ background: 'rgba(245, 158, 11, 0.05)', border: '1px solid rgba(245, 158, 11, 0.3)', borderRadius: '16px', padding: '24px', marginBottom: '24px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px', textAlign: 'center' }}>
+          <div style={{ fontSize: '2.5rem' }}>📱</div>
+          <h2 style={{ color: 'var(--warning)', margin: 0 }}>Scan WhatsApp QR Code</h2>
+          <p style={{ maxWidth: '600px', margin: 0, color: 'var(--text-muted)' }}>
+            Your WhatsApp session is currently disconnected. Scan the QR code below using your phone's WhatsApp linked devices settings to connect instantly.
+          </p>
+          <div style={{ background: '#fff', padding: '16px', borderRadius: '12px', border: '1px solid var(--glass-border)' }}>
+            <img 
+              src={`https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(sysStatus.whatsappQr)}`} 
+              alt="WhatsApp QR Code" 
+              style={{ display: 'block', width: '250px', height: '250px' }}
+            />
+          </div>
+          <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>⏳ Refreshing automatically in the background...</span>
+        </div>
+      )}
+
       {/* SECTION 0: Categories Management Panel */}
       <div className="panel-card">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>

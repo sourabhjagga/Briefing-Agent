@@ -18,6 +18,7 @@ class WhatsAppListener {
     this.isReady = false;
     this.messageCount = 0;
     this.isSessionAlerted = false;
+    this.latestQr = null;
     this.sock = null;
     this.targetIds = new Set();
     this.authPath = path.resolve(__dirname, '../data/baileys_auth');
@@ -172,10 +173,12 @@ class WhatsAppListener {
           logger.info('  SCAN THIS QR CODE WITH YOUR WHATSAPP');
           logger.info('========================================');
           qrcode.generate(qr, { small: true });
+          this.latestQr = qr;
         }
 
         if (connection === 'close') {
           this.isReady = false;
+          this.latestQr = null; // Clear QR on connection close
           const statusCode = lastDisconnect?.error?.output?.statusCode;
           const errorMessage = lastDisconnect?.error?.message;
           const errorDetail = lastDisconnect?.error?.output?.payload?.error || lastDisconnect?.error?.output?.payload?.message || '';
@@ -202,6 +205,7 @@ class WhatsAppListener {
         } else if (connection === 'open') {
           this.isReady = true;
           this.isSessionAlerted = false; // Reset alert status on successful connection
+          this.latestQr = null; // Clear QR when connected
           logger.info('✅ WhatsApp socket client successfully connected!');
           await this._discoverChats();
         }
@@ -393,6 +397,7 @@ class WhatsAppListener {
       isReady: this.isReady,
       messageCount: this.messageCount,
       targetCount: this.targetIds.size,
+      qr: this.latestQr
     };
   }
 
