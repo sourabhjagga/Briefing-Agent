@@ -5,7 +5,7 @@ This log details the current project status, recent changes, immediate next step
 ---
 
 ## 🎯 Current Goal
-The overall goal has been to extend the **Credit Cards & Deals Briefing Agent** to support **custom categories** dynamically via the Web Dashboard, resolve **WhatsApp newsletter discovery**, implement **unified background session disconnect alerts**, and support **direct WhatsApp QR code scanning on the web dashboard**.
+The overall goal has been to extend the **Credit Cards & Deals Briefing Agent** to support **custom categories** dynamically via the Web Dashboard, resolve **WhatsApp newsletter discovery**, implement **unified background session disconnect alerts**, support **direct WhatsApp QR code scanning on the web dashboard**, and enable **database-backed session cookie persistence**.
 
 All core features are currently **implemented, verified, and successfully pushed** to the remote repository.
 
@@ -13,38 +13,37 @@ All core features are currently **implemented, verified, and successfully pushed
 
 ## 🛠️ What Was Just Changed
 
-### 1. Web Dashboard WhatsApp QR Code Scanner (New!)
-- **Backend QR Capture (`src/whatsapp.js`)**: Captures and exposes the raw connection QR code string via a `latestQr` property in `getStatus()`, resetting to `null` once connected or closed cleanly.
-- **API Integration (`src/index.js`)**: Included `whatsappQr` dynamically inside the main `/health` endpoint response payload.
-- **Glassmorphic UI Card (`public/app.js`)**: Created a beautiful, live-updating Warning panel right under the dashboard header. If WhatsApp is disconnected and a QR code is active, it renders a high-quality QR code image using a secure public rendering API (`qrserver.com`), allowing immediate mobile scanning from the browser.
+### 1. Database-Backed Session Cookies Persistence (New!)
+- **SQLite Storage Table (`src/database.js`)**: Added a persistent `cookies` table inside the SQLite schema.
+  ```sql
+  CREATE TABLE IF NOT EXISTS cookies (
+    site TEXT PRIMARY KEY,
+    cookies_json TEXT NOT NULL,
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
+  ```
+- **CRUD Operations**: Implemented and compiled prepared statements (`saveCookies`, `getCookies`, `deleteCookies`) and public helper methods in `MessageDatabase`.
+- **Express APIs (`src/index.js`)**: Updated the session cookie import, delete, and status endpoints to read and write directly to SQLite, while keeping standard JSON files in the `/app/data` directory as a legacy fallback.
+- **Scrapers Ingestion (`reddit-scraper.js`, `forum-scraper.js`, `deals-scraper.js`)**: Updated all scrapers to load active cookies from SQLite first, gracefully falling back to legacy `.json` files if not found in the DB. Newly generated cookies from successful autologins are automatically saved back into SQLite.
 
-### 2. Unified Session Disconnect Alerts
-- **Central Dispatcher (`src/index.js`)**: Implemented `sendSystemAlert(message)` routing alerts to the primary `cc` Telegram Bot.
-- **WhatsApp (`src/whatsapp.js`)**: Triggers real-time Telegram alerts on logout (`DisconnectReason.loggedOut`) and stream errors. Tracks alert state (`this.isSessionAlerted`) and resets on successful reconnect.
-- **Telegram User (`src/telegram-user.js`)**: Performs startup auth checks and live session checks during each background scrape interval. Alerts on Telegram if the session is revoked.
-- **Reddit (`src/scrapers/reddit-scraper.js`)**: Standardized with the `onAlert` callback to notify on session cookie expiry.
-- **Technofino Forum (`src/scrapers/forum-scraper.js`) & DesiDime Deals (`src/scrapers/deals-scraper.js`)**: Monitors session cookies and autologin credentials. If auth fails and credential login is unsuccessful, a structured Telegram alert is dispatched.
+### 2. Premium Deals AI Summary Formatting
+- **Anchor Hyperlink Formatting (`src/summarizer.js`)**: Configured the AI engine to strictly format all links using clean, Telegram-safe anchor tags (`<a href="URL">Get Deal</a>`) rather than long, raw, URL-encoded text.
+- **Structured Categories Prompt**: Upgraded the `deals` category prompt to support clean emoji-based groupings (Electronics, Fashion, Groceries, Gift Cards, etc.), bold prices, and card names.
 
-### 3. Custom Categories & WhatsApp Newsletter Fixes
-- **WhatsApp Newsletter Discovery**: Switched from the broken `sock.newsletterSubscribed()` to `sock.newsletterGetSubscribed()` with a raw query fallback.
-- **Custom Categories**: Added a fully dynamic categories system (SQLite database table + REST APIs + hot-reloading Telegram bot instances).
-- **Dashboard UI**: Redesigned the Web UI to feature a dynamic Categories panel, platform-dropdown generation, and source grid grouping.
+### 3. Web Dashboard WhatsApp QR Code Scanner
+- **Dynamic QR Capture**: Captures and exposes the live QR code text string when WhatsApp is disconnected. Renders it dynamically inside a premium, glassmorphic card on the dashboard using a secure rendering API (`qrserver.com`).
+- **Self-Healing Auto-Restart**: Automatically clears stale WhatsApp auth files (`data/baileys_auth`) and restarts the connection in a clean state upon receiving a `401 Unauthorized / Logged Out` close event.
 
 ---
 
-## ⏭️ Immediate Next Steps (On Your Mac)
+## ⏭️ Immediate Next Steps (On Your Mac/Coolify)
 
-1. **Clone & Spin Up**:
-   - Pull the latest `main` branch.
-   - Run `npm install` and start the app using `npm start`.
+1. **Pull the latest changes**:
+   - Run `git pull origin main` to pull commit `755e079` and the latest database cookie updates.
    
-2. **Scan WhatsApp QR on Dashboard**:
-   - If WhatsApp session is disconnected, navigate to `http://localhost:3000` (or your deployment URL).
-   - You will see a beautiful **Scan WhatsApp QR Code** card directly at the top of the dashboard. Just scan it using your phone!
-
-3. **Verify Background Session Alerts**:
-   - Delete/corrupt a cookie file under `data/` (e.g. `data/reddit_cookies.json`).
-   - Run a manual or scheduled scrape session to verify that a structured alert is dispatched directly to your Telegram bot.
+2. **Scan / Authenticate**:
+   - Paste cookies in the dashboard for Reddit, Technofino, or DesiDime. They will instantly save to SQLite database.
+   - Deploy or restart the container, and confirm that all active sessions remain completely persistent from SQLite.
 
 ---
 

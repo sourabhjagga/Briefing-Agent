@@ -351,10 +351,16 @@ function startDashboardServer(database, whatsapp, telegramUser, scheduler, summa
     const desidimePath = path.resolve(__dirname, '../data/desidime_cookies.json');
     const redditPath = path.resolve(__dirname, '../data/reddit_cookies.json');
     const technofinoPath = path.resolve(__dirname, '../data/technofino_cookies.json');
+    
+    // Check DB first, fallback to file existence
+    const dbDesidime = database.getCookies('desidime');
+    const dbReddit = database.getCookies('reddit');
+    const dbTechnofino = database.getCookies('technofino');
+
     res.json({
-      desidime: fs.existsSync(desidimePath),
-      reddit: fs.existsSync(redditPath),
-      technofino: fs.existsSync(technofinoPath)
+      desidime: !!dbDesidime || fs.existsSync(desidimePath),
+      reddit: !!dbReddit || fs.existsSync(redditPath),
+      technofino: !!dbTechnofino || fs.existsSync(technofinoPath)
     });
   });
 
@@ -379,9 +385,20 @@ function startDashboardServer(database, whatsapp, telegramUser, scheduler, summa
         return res.status(400).json({ error: 'Cookies must be a valid JSON array.' });
       }
 
-      const targetPath = path.resolve(__dirname, `../data/${site}_cookies.json`);
-      fs.writeFileSync(targetPath, JSON.stringify(parsedCookies, null, 2), 'utf8');
-      logger.info(`🔐 Saved imported cookies for ${site} successfully.`);
+      // Save to SQLite DB for 100% persistent container redeployments
+      database.saveCookies(site, parsedCookies);
+
+      // Legacy fallback: Save to file
+      try {
+        const targetPath = path.resolve(__dirname, `../data/${site}_cookies.json`);
+        const dir = path.dirname(targetPath);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(targetPath, JSON.stringify(parsedCookies, null, 2), 'utf8');
+      } catch (fileErr) {
+        logger.debug(`Could not write cookies to legacy file: ${fileErr.message}`);
+      }
+
+      logger.info(`🔐 Saved imported cookies for ${site} successfully in DB & file.`);
       res.json({ success: true });
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -396,11 +413,15 @@ function startDashboardServer(database, whatsapp, telegramUser, scheduler, summa
         return res.status(400).json({ error: 'Invalid site name' });
       }
 
+      // Delete from SQLite DB
+      database.deleteCookies(site);
+
+      // Legacy fallback: Delete file
       const targetPath = path.resolve(__dirname, `../data/${site}_cookies.json`);
       if (fs.existsSync(targetPath)) {
         fs.unlinkSync(targetPath);
       }
-      logger.info(`❌ Deleted session cookies for ${site}.`);
+      logger.info(`❌ Deleted session cookies for ${site} from DB & file.`);
       res.json({ success: true });
     } catch (err) {
       res.status(500).json({ error: err.message });

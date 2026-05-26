@@ -146,18 +146,40 @@ class DealsScraper {
   }
 
   async _ensureAuthenticated() {
+    let cookiesArray = null;
+
+    // 1. Try loading cookies from SQLite database first for 100% container persistence
+    try {
+      cookiesArray = this.database.getCookies('desidime');
+      if (cookiesArray && Array.isArray(cookiesArray) && cookiesArray.length > 0) {
+        this.cookiesHeader = this._formatCookieHeader(cookiesArray);
+        const isValid = await this._verifySession();
+        if (isValid) {
+          logger.info('✅ Persistent DesiDime session cookies loaded from database and verified.');
+          this.isSessionAlerted = false;
+          return true;
+        }
+        logger.warn('⚠️  Database DesiDime session cookies expired or invalid.');
+        cookiesArray = null;
+      }
+    } catch (dbErr) {
+      logger.debug(`Failed to load DesiDime cookies from DB: ${dbErr.message}`);
+    }
+
     const hasCookiesFile = fs.existsSync(this.cookiePath);
-    // 1. Try loading cookies from disk
-    if (hasCookiesFile) {
+    // 2. Fallback to legacy cookie file
+    if (!cookiesArray && hasCookiesFile) {
       try {
         const raw = fs.readFileSync(this.cookiePath, 'utf8');
-        const cookiesArray = JSON.parse(raw);
+        cookiesArray = JSON.parse(raw);
         this.cookiesHeader = this._formatCookieHeader(cookiesArray);
         
         // Verify active session
         const isValid = await this._verifySession();
         if (isValid) {
-          logger.info('✅ Persistent DesiDime session cookies verified.');
+          logger.info('✅ Persistent DesiDime session cookies loaded from legacy file and verified.');
+          // Seed back into SQLite database
+          this.database.saveCookies('desidime', cookiesArray);
           this.isSessionAlerted = false; // Reset alert status on successful session check
           return true;
         }
@@ -264,9 +286,17 @@ class DealsScraper {
     // Verify session
     const success = await this._verifySession();
     if (success) {
-      const dir = path.dirname(this.cookiePath);
-      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(this.cookiePath, JSON.stringify(finalCookiesArray, null, 2), 'utf8');
+      // Save cookies to SQLite database for 100% persistence
+      this.database.saveCookies('desidime', finalCookiesArray);
+
+      // Save cookies to disk as fallback
+      try {
+        const dir = path.dirname(this.cookiePath);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(this.cookiePath, JSON.stringify(finalCookiesArray, null, 2), 'utf8');
+      } catch (fileErr) {
+        logger.debug(`Could not write DesiDime cookies to file: ${fileErr.message}`);
+      }
       return true;
     } else {
       // Check for rails login alerts

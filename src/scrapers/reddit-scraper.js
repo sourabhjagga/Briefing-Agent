@@ -72,13 +72,27 @@ class RedditScraper {
   }
 
   _loadCookies() {
+    // 1. Try loading from database first
+    try {
+      const dbCookies = this.database.getCookies('reddit');
+      if (dbCookies && Array.isArray(dbCookies) && dbCookies.length > 0) {
+        this.cookiesHeader = dbCookies.map(c => `${c.name}=${c.value}`).join('; ');
+        logger.debug('✅ Loaded Reddit cookies from SQLite database.');
+        return;
+      }
+    } catch (err) {
+      logger.debug(`Failed to load Reddit cookies from DB: ${err.message}`);
+    }
+
+    // 2. Fallback to file
     if (fs.existsSync(this.cookiePath)) {
       try {
         const raw = fs.readFileSync(this.cookiePath, 'utf8');
         const cookiesArray = JSON.parse(raw);
         this.cookiesHeader = cookiesArray.map(c => `${c.name}=${c.value}`).join('; ');
+        logger.debug('✅ Loaded Reddit cookies from legacy file.');
       } catch (err) {
-        logger.error(`Failed to load Reddit cookies: ${err.message}`);
+        logger.error(`Failed to load Reddit cookies from file: ${err.message}`);
       }
     } else {
       this.cookiesHeader = '';

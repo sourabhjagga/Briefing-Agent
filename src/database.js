@@ -84,6 +84,12 @@ class MessageDatabase {
         is_active INTEGER DEFAULT 1,
         created_at TEXT DEFAULT (datetime('now'))
       );
+
+      CREATE TABLE IF NOT EXISTS cookies (
+        site TEXT PRIMARY KEY,
+        cookies_json TEXT NOT NULL,
+        updated_at TEXT DEFAULT (datetime('now'))
+      );
     `);
   }
 
@@ -196,6 +202,19 @@ class MessageDatabase {
       `),
       toggleCategory: this.db.prepare(`
         UPDATE categories SET is_active = ? WHERE id = ?
+      `),
+      saveCookies: this.db.prepare(`
+        INSERT INTO cookies (site, cookies_json)
+        VALUES (?, ?)
+        ON CONFLICT(site) DO UPDATE SET
+          cookies_json=excluded.cookies_json,
+          updated_at=datetime('now')
+      `),
+      getCookies: this.db.prepare(`
+        SELECT cookies_json FROM cookies WHERE site = ?
+      `),
+      deleteCookies: this.db.prepare(`
+        DELETE FROM cookies WHERE site = ?
       `)
     };
   }
@@ -356,6 +375,32 @@ class MessageDatabase {
 
   getSourcesByCategory(categorySlug) {
     return this.getAllSources().filter(s => s.type.startsWith(categorySlug + '-'));
+  }
+
+  saveCookies(site, cookiesArray) {
+    try {
+      this.statements.saveCookies.run(site, JSON.stringify(cookiesArray));
+    } catch (err) {
+      logger.error(`Failed to save cookies for ${site} in DB: ${err.message}`);
+    }
+  }
+
+  getCookies(site) {
+    try {
+      const row = this.statements.getCookies.get(site);
+      return row ? JSON.parse(row.cookies_json) : null;
+    } catch (err) {
+      logger.error(`Failed to get cookies for ${site} from DB: ${err.message}`);
+      return null;
+    }
+  }
+
+  deleteCookies(site) {
+    try {
+      this.statements.deleteCookies.run(site);
+    } catch (err) {
+      logger.error(`Failed to delete cookies for ${site} from DB: ${err.message}`);
+    }
   }
 
   _getMidnightIST() {
