@@ -1,7 +1,12 @@
 /**
  * DesiDime Deals Scraper
  * Pure HTTP scraper utilizing Axios and Cheerio (Puppeteer-free).
- * Accurately parses DesiDime real DOM elements (li.post-unit) and manages session cookies.
+ * 
+ * FAILPROOF ARCHITECTURE:
+ * - No pre-scrape session verification (eliminates false negatives).
+ * - Imported cookies are trusted and used directly.
+ * - Session health is judged by actual scrape results (deals found).
+ * - Alerts only fire after consecutive scrape failures, not verification guesses.
  */
 
 const axios = require('axios');
@@ -20,6 +25,7 @@ class DealsScraper {
     this.username = process.env.DESIDIME_USERNAME || '';
     this.password = process.env.DESIDIME_PASSWORD || '';
     this.isSessionAlerted = false;
+    this.consecutiveFailures = 0; // Track consecutive zero-deal scrapes
     
     this.loginUrl = 'https://www.desidime.com/users/sign_in';
     this.targetUrl = 'https://www.desidime.com/forums/hot-deals-online';
@@ -48,11 +54,10 @@ class DealsScraper {
   async scrapeDesiDime() {
     logger.info('🔍 Scraping DesiDime Hot Deals via HTTP...');
     try {
-      const authenticated = await this._ensureAuthenticated();
-      if (!authenticated) {
-        logger.warn('⚠️  Scraping DesiDime in GUEST mode (limited pagination or customized feed).');
-      }
+      // Step 1: Load cookies (no verification request — just load and use)
+      this._loadCookies();
 
+      // Step 2: Scrape the actual target page with whatever cookies we have
       const dbCookies = this.database.getCookies('desidime');
       const res = await this._executeGetRequest(this.targetUrl, dbCookies);
 
@@ -109,6 +114,23 @@ class DealsScraper {
 
       logger.info(`✅ Successfully parsed ${deals.length} deals from DesiDime.`);
 
+      // Step 3: Judge session health by actual results
+      if (deals.length > 0) {
+        this.consecutiveFailures = 0;
+        this.isSessionAlerted = false;
+      } else {
+        this.consecutiveFailures++;
+        logger.warn(`⚠️  DesiDime returned 0 deals (consecutive failures: ${this.consecutiveFailures}).`);
+        
+        // Only alert after 3 consecutive zero-result scrapes (45 minutes of failures)
+        if (this.consecutiveFailures >= 3 && !this.isSessionAlerted && this.onAlert) {
+          this.onAlert(
+            '⚠️ <b>DesiDime Scraper Issue</b>\n\nDesiDime has returned 0 deals for 3 consecutive scrapes. Your session cookies may have expired. Please login to DesiDime in your browser, export fresh cookies via EditThisCookie, and paste them into the Web Dashboard.'
+          );
+          this.isSessionAlerted = true;
+        }
+      }
+
       let savedCount = 0;
       for (const deal of deals) {
         if (!deal.title || !deal.link) continue;
@@ -140,184 +162,41 @@ class DealsScraper {
     }
   }
 
-  async _ensureAuthenticated() {
-    let cookiesArray = null;
-
-    // 1. Try loading cookies from SQLite database first for 100% container persistence
+  /**
+   * FAILPROOF: Simply load cookies from DB or file. No verification request.
+   * The actual scrape will tell us if they work.
+   */
+  _loadCookies() {
+    // 1. Try loading from SQLite database first
     try {
-      cookiesArray = this.database.getCookies('desidime');
-      if (cookiesArray && Array.isArray(cookiesArray) && cookiesArray.length > 0) {
-        this.cookiesHeader = this._formatCookieHeader(cookiesArray);
-        const isValid = await this._verifySession(cookiesArray);
-        if (isValid) {
-          logger.info('✅ Persistent DesiDime session cookies loaded from database and verified.');
-          this.isSessionAlerted = false;
-          return true;
-        }
-        logger.warn('⚠️  Database DesiDime session cookies expired or invalid.');
-        cookiesArray = null;
+      const dbCookies = this.database.getCookies('desidime');
+      if (dbCookies && Array.isArray(dbCookies) && dbCookies.length > 0) {
+        this.cookiesHeader = this._formatCookieHeader(dbCookies);
+        logger.debug('✅ Loaded DesiDime cookies from SQLite database.');
+        return;
       }
-    } catch (dbErr) {
-      logger.debug(`Failed to load DesiDime cookies from DB: ${dbErr.message}`);
+    } catch (err) {
+      logger.debug(`Failed to load DesiDime cookies from DB: ${err.message}`);
     }
 
-    const hasCookiesFile = fs.existsSync(this.cookiePath);
-    // 2. Fallback to legacy cookie file
-    if (!cookiesArray && hasCookiesFile) {
+    // 2. Fallback to file
+    if (fs.existsSync(this.cookiePath)) {
       try {
         const raw = fs.readFileSync(this.cookiePath, 'utf8');
-        cookiesArray = JSON.parse(raw);
+        const cookiesArray = JSON.parse(raw);
         this.cookiesHeader = this._formatCookieHeader(cookiesArray);
-        
-        // Verify active session
-        const isValid = await this._verifySession(cookiesArray);
-        if (isValid) {
-          logger.info('✅ Persistent DesiDime session cookies loaded from legacy file and verified.');
-          // Seed back into SQLite database
-          this.database.saveCookies('desidime', cookiesArray);
-          this.isSessionAlerted = false; // Reset alert status on successful session check
-          return true;
-        }
-        logger.warn('⚠️  Saved DesiDime session expired or invalid.');
+        // Seed into DB for persistence
+        this.database.saveCookies('desidime', cookiesArray);
+        logger.debug('✅ Loaded DesiDime cookies from legacy file and seeded into DB.');
+        return;
       } catch (err) {
-        logger.error(`Failed to parse DesiDime cookies: ${err.message}`);
+        logger.error(`Failed to load DesiDime cookies from file: ${err.message}`);
       }
     }
 
-    // 2. Try autologin via HTTP credentials
-    if (this.username && this.password) {
-      logger.info('🔑 Initiating DesiDime autologin via credentials...');
-      try {
-        const success = await this._performLogin();
-        if (success) {
-          logger.info('✅ DesiDime autologin succeeded!');
-          this.isSessionAlerted = false; // Reset alert status on successful login
-          return true;
-        }
-      } catch (err) {
-        logger.error(`DesiDime credentials autologin failed: ${err.message}`);
-      }
-    }
-
-    // 3. Alert if session was active before but now expired and credentials login failed
-    if (hasCookiesFile || (this.username && this.password)) {
-      if (!this.isSessionAlerted && this.onAlert) {
-        this.onAlert(
-          '⚠️ <b>DesiDime Session Expired</b>\n\nYour DesiDime deals session cookies have expired or automated credential login failed. Please login to DesiDime in your browser, export fresh cookies via EditThisCookie, and paste them into the Web Dashboard to restore authenticated access.'
-        );
-        this.isSessionAlerted = true;
-      }
-    }
-
-    return false;
-  }
-
-  async _verifySession(cookiesArray = null) {
-    try {
-      const res = await this._executeGetRequest('https://www.desidime.com/', cookiesArray);
-      if (!res || !res.data) return false;
-
-      const $ = cheerio.load(res.data);
-      
-      // 1. Check for active logged in indicators
-      const hasLogout = $('a[href*="/sign_out"], .signout').length > 0;
-      const hasProfile = $('.user-profile, .user-avatar, a[href*="/users/"]').filter((i, el) => {
-        const href = $(el).attr('href') || '';
-        return !href.includes('sign_in') && !href.includes('sign_up');
-      }).length > 0;
-
-      if (hasLogout || hasProfile) {
-        return true;
-      }
-
-      // 2. Check for explicit guest indicators
-      const hasSignIn = $('a[href*="/sign_in"], .login-btn, a[href*="/users/sign_in"]').length > 0;
-      if (hasSignIn) {
-        logger.debug('DesiDime session check: Detected as GUEST via sign-in button presence.');
-        return false;
-      }
-
-      // 3. Fallback: if we parsed any hot deals on the homepage, count it as valid
-      const postCount = $('.post-unit, .deal-box').length;
-      if (postCount > 0) {
-        logger.debug(`DesiDime session check: Loaded home successfully with ${postCount} posts.`);
-        return true;
-      }
-
-      return false;
-    } catch (err) {
-      logger.debug(`DesiDime session verification failed: ${err.message}`);
-      return false;
-    }
-  }
-
-  async _performLogin() {
-    // A. Fetch sign_in page to get CSRF authenticity_token
-    const getRes = await axios.get(this.loginUrl, {
-      headers: { 'User-Agent': this.userAgent },
-      timeout: 15000
-    });
-
-    const $ = cheerio.load(getRes.data);
-    const csrfToken = $('input[name="authenticity_token"]').first().val() || 
-                      $('meta[name="csrf-token"]').attr('content');
-
-    if (!csrfToken) {
-      throw new Error('Could not retrieve authenticity_token/csrf-token from DesiDime login page.');
-    }
-
-    const initialCookies = this._parseSetCookies(getRes.headers['set-cookie']);
-
-    // B. Post to login endpoint
-    const params = new URLSearchParams();
-    params.append('authenticity_token', csrfToken);
-    params.append('user[login]', this.username);
-    params.append('user[password]', this.password);
-    params.append('user[remember_me]', '1');
-
-    const postRes = await axios.post(this.loginUrl, params, {
-      headers: {
-        'User-Agent': this.userAgent,
-        'Cookie': this._formatCookieHeader(initialCookies),
-        'Content-Type': 'application/x-www-form-urlencoded'
-      },
-      maxRedirects: 0,
-      validateStatus: (status) => status >= 200 && status < 400
-    });
-
-    const loginCookies = this._parseSetCookies(postRes.headers['set-cookie']);
-    const combinedCookies = [...initialCookies, ...loginCookies];
-
-    // Remove duplicates
-    const finalCookiesMap = {};
-    combinedCookies.forEach(c => {
-      finalCookiesMap[c.name] = c;
-    });
-    const finalCookiesArray = Object.values(finalCookiesMap);
-
-    this.cookiesHeader = this._formatCookieHeader(finalCookiesArray);
-
-    // Verify session
-    const success = await this._verifySession();
-    if (success) {
-      // Save cookies to SQLite database for 100% persistence
-      this.database.saveCookies('desidime', finalCookiesArray);
-
-      // Save cookies to disk as fallback
-      try {
-        const dir = path.dirname(this.cookiePath);
-        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-        fs.writeFileSync(this.cookiePath, JSON.stringify(finalCookiesArray, null, 2), 'utf8');
-      } catch (fileErr) {
-        logger.debug(`Could not write DesiDime cookies to file: ${fileErr.message}`);
-      }
-      return true;
-    } else {
-      // Check for rails login alerts
-      const errorHtml = cheerio.load(postRes.data);
-      const errorText = errorHtml('.alert-danger, .flash-error, .error_explanation').text().trim();
-      throw new Error(errorText || 'Authentication completed but no active profile session was discovered.');
-    }
+    // 3. No cookies available — will scrape as guest
+    this.cookiesHeader = '';
+    logger.debug('ℹ️  No DesiDime cookies available. Scraping as guest.');
   }
 
   _parseSetCookies(setCookieHeader) {
@@ -326,7 +205,7 @@ class DealsScraper {
       const parts = str.split(';')[0].split('=');
       return {
         name: parts[0].trim(),
-        value: parts[1].trim()
+        value: parts.slice(1).join('=').trim()
       };
     });
   }
@@ -359,19 +238,7 @@ class DealsScraper {
         });
         if (res.data && res.data.status === 'ok' && res.data.solution) {
           if (res.data.solution.cookies) {
-            const html = res.data.solution.response || '';
-            const $ = cheerio.load(html);
-            
-            const hasLogout = $('a[href*="/sign_out"], .signout').length > 0;
-            const hasProfile = $('.user-profile, .user-avatar, a[href*="/users/"]').filter((i, el) => {
-              const href = $(el).attr('href') || '';
-              return !href.includes('sign_in') && !href.includes('sign_up');
-            }).length > 0;
-            const hasSignIn = $('a[href*="/sign_in"], .login-btn, a[href*="/users/sign_in"]').length > 0;
-            
-            const isAuthed = (hasLogout || hasProfile) && !hasSignIn;
-            
-            this._saveUpdatedCookies(res.data.solution.cookies, isAuthed);
+            this._saveUpdatedCookies(res.data.solution.cookies, cookiesArray);
           }
           return { data: res.data.solution.response };
         }
@@ -390,38 +257,37 @@ class DealsScraper {
     });
   }
 
-  _saveUpdatedCookies(newCookies, isAuthenticated = true) {
+  /**
+   * FAILPROOF cookie merge: Preserves original auth tokens. Only updates
+   * non-essential cookies (cf_clearance, __cfduid, etc.) from FlareSolverr.
+   * Essential cookies are NEVER overwritten by FlareSolverr responses.
+   */
+  _saveUpdatedCookies(newCookies, originalCookiesFromDB) {
     if (!newCookies || !Array.isArray(newCookies)) return;
     try {
-      const originalCookies = this.database.getCookies('desidime') || [];
-      const mergedCookies = this._mergeCookies(originalCookies, newCookies, ['dd_auth_token', 'at', '_session_id'], isAuthenticated);
+      const originalCookies = originalCookiesFromDB || this.database.getCookies('desidime') || [];
+      const essentialKeys = ['dd_auth_token', 'at', '_session_id', '_desidime_session', 'remember_user_token'];
 
+      const mergedMap = {};
+      // Original cookies are the base — they have precedence for essential keys
+      originalCookies.forEach(c => { mergedMap[c.name] = c; });
+
+      newCookies.forEach(c => {
+        // NEVER overwrite essential auth tokens from FlareSolverr guest responses
+        if (essentialKeys.includes(c.name) && mergedMap[c.name]) {
+          logger.debug(`[FlareSolverr] Preserving original session cookie: ${c.name}`);
+          return;
+        }
+        mergedMap[c.name] = c;
+      });
+
+      const mergedCookies = Object.values(mergedMap);
       this.database.saveCookies('desidime', mergedCookies);
       this.cookiesHeader = this._formatCookieHeader(mergedCookies);
-      logger.debug(`💾 [FlareSolverr] Successfully merged and updated cookies in database. Authenticated: ${isAuthenticated}`);
+      logger.debug('💾 [FlareSolverr] Merged non-essential cookies (preserved auth tokens).');
     } catch (e) {
       logger.debug(`Failed to save updated cookies from FlareSolverr: ${e.message}`);
     }
-  }
-
-  _mergeCookies(originalCookies, newCookies, essentialKeys, isAuthenticated = true) {
-    if (!newCookies || !Array.isArray(newCookies)) return originalCookies;
-    if (!originalCookies || !Array.isArray(originalCookies)) return newCookies;
-
-    const mergedMap = {};
-    originalCookies.forEach(c => { mergedMap[c.name] = c; });
-
-    newCookies.forEach(c => {
-      // If the response is NOT authenticated, preserve the original login session cookies!
-      // Do not overwrite them with guest cookies.
-      if (essentialKeys.includes(c.name) && !isAuthenticated) {
-        logger.debug(`[FlareSolverr] Preserving original session cookie: ${c.name}`);
-        return;
-      }
-      mergedMap[c.name] = c;
-    });
-
-    return Object.values(mergedMap);
   }
 }
 

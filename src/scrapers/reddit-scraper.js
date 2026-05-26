@@ -133,27 +133,8 @@ class RedditScraper {
 
     logger.debug(`Reddit Layer 2: Attempting authenticated HTTP scraper for r/${sub}`);
     try {
-      // 1. Validate if cookies are active
+      // Use cookies directly — no pre-verification request
       const dbCookies = this.database.getCookies('reddit');
-      const isSessionActive = await this._verifyRedditSession(dbCookies);
-      if (!isSessionActive) {
-        if (!this.isSessionAlerted && this.onAlert) {
-          if (typeof this.onAlert === 'function') {
-            this.onAlert(
-              '⚠️ <b>Reddit Session Expired</b>\n\nYour Reddit scraper session cookies have expired or are invalid. Please login to Reddit in your browser, export fresh cookies via EditThisCookie, and paste them into the Web Dashboard to resume authenticated scraping.'
-            );
-          } else if (typeof this.onAlert.sendMessage === 'function') {
-            await this.onAlert.sendMessage(
-              '⚠️ <b>Reddit Session Expired</b>\n\nYour Reddit scraper session cookies have expired or are invalid. Please login to Reddit in your browser, export fresh cookies via EditThisCookie, and paste them into the Web Dashboard to resume authenticated scraping.'
-            ).catch(() => {});
-          }
-          this.isSessionAlerted = true;
-        }
-        return false;
-      }
-      this.isSessionAlerted = false; // Reset alert status on successful session
-
-      // 2. Fetch target HTML page using session cookies
       const res = await this._executeGetRequest(`https://www.reddit.com/r/${sub}/new/`, dbCookies);
 
       const $ = cheerio.load(res.data);
@@ -234,17 +215,36 @@ class RedditScraper {
     }
   }
 
-  async _verifyRedditSession(cookiesArray = null) {
+  /**
+   * FAILPROOF cookie merge: Essential auth cookies (reddit_session, token, etc.)
+   * from your imported set are NEVER overwritten by FlareSolverr.
+   * Only Cloudflare bypass tokens (cf_clearance) are updated.
+   */
+  _saveUpdatedCookies(newCookies) {
+    if (!newCookies || !Array.isArray(newCookies)) return;
     try {
-      const res = await this._executeGetRequest('https://www.reddit.com/settings/', cookiesArray);
-      if (!res || !res.data) return false;
-      // If we are redirected to login, or if the page contains login/register inputs, it's invalid
-      if (res.data.includes('login') && (res.data.includes('password') || res.data.includes('username'))) {
-        return false;
-      }
-      return true;
-    } catch (err) {
-      return false;
+      const originalCookies = this.database.getCookies('reddit') || [];
+      const essentialKeys = ['reddit_session', 'token', 'session_tracker', 'loid', 'edgebucket'];
+
+      const mergedMap = {};
+      // Original cookies are the base — they have precedence for essential keys
+      originalCookies.forEach(c => { mergedMap[c.name] = c; });
+
+      newCookies.forEach(c => {
+        // NEVER overwrite essential auth tokens from FlareSolverr responses
+        if (essentialKeys.includes(c.name) && mergedMap[c.name]) {
+          logger.debug(`[FlareSolverr] Preserving original session cookie: ${c.name}`);
+          return;
+        }
+        mergedMap[c.name] = c;
+      });
+
+      const mergedCookies = Object.values(mergedMap);
+      this.database.saveCookies('reddit', mergedCookies);
+      this.cookiesHeader = mergedCookies.map(c => `${c.name}=${c.value}`).join('; ');
+      logger.debug('💾 [FlareSolverr] Merged non-essential cookies (preserved auth tokens).');
+    } catch (e) {
+      logger.debug(`Failed to save updated cookies from FlareSolverr: ${e.message}`);
     }
   }
 
@@ -313,10 +313,7 @@ class RedditScraper {
         });
         if (res.data && res.data.status === 'ok' && res.data.solution) {
           if (res.data.solution.cookies) {
-            const html = res.data.solution.response || '';
-            const isAuthed = !html.includes('login') || !(html.includes('password') && html.includes('username'));
-            
-            this._saveUpdatedCookies(res.data.solution.cookies, isAuthed);
+            this._saveUpdatedCookies(res.data.solution.cookies);
           }
           return { data: res.data.solution.response };
         }
@@ -335,39 +332,6 @@ class RedditScraper {
     });
   }
 
-  _saveUpdatedCookies(newCookies, isAuthenticated = true) {
-    if (!newCookies || !Array.isArray(newCookies)) return;
-    try {
-      const originalCookies = this.database.getCookies('reddit') || [];
-      const mergedCookies = this._mergeCookies(originalCookies, newCookies, ['reddit_session'], isAuthenticated);
-
-      this.database.saveCookies('reddit', mergedCookies);
-      this.cookiesHeader = mergedCookies.map(c => `${c.name}=${c.value}`).join('; ');
-      logger.debug(`💾 [FlareSolverr] Successfully merged and updated cookies in database. Authenticated: ${isAuthenticated}`);
-    } catch (e) {
-      logger.debug(`Failed to save updated cookies from FlareSolverr: ${e.message}`);
-    }
-  }
-
-  _mergeCookies(originalCookies, newCookies, essentialKeys, isAuthenticated = true) {
-    if (!newCookies || !Array.isArray(newCookies)) return originalCookies;
-    if (!originalCookies || !Array.isArray(originalCookies)) return newCookies;
-
-    const mergedMap = {};
-    originalCookies.forEach(c => { mergedMap[c.name] = c; });
-
-    newCookies.forEach(c => {
-      // If the response is NOT authenticated, preserve the original login session cookies!
-      // Do not overwrite them with guest cookies.
-      if (essentialKeys.includes(c.name) && !isAuthenticated) {
-        logger.debug(`[FlareSolverr] Preserving original session cookie: ${c.name}`);
-        return;
-      }
-      mergedMap[c.name] = c;
-    });
-
-    return Object.values(mergedMap);
-  }
 }
 
 module.exports = RedditScraper;

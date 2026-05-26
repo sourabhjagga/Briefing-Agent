@@ -1,7 +1,12 @@
 /**
  * Technofino Forum Scraper
  * Pure HTTP scraper utilizing Axios and Cheerio (Puppeteer-free).
- * Supports session cookies validation and automated XenForo HTTP login fallback.
+ * 
+ * FAILPROOF ARCHITECTURE:
+ * - No pre-scrape session verification (eliminates false negatives).
+ * - Imported cookies are trusted and used directly.
+ * - Session health is judged by VIP Lounge thread count (0 = likely guest).
+ * - Alerts only fire after consecutive VIP Lounge failures.
  */
 
 const axios = require('axios');
@@ -20,19 +25,23 @@ class ForumScraper {
     this.username = process.env.TECHNOFINO_USERNAME || '';
     this.password = process.env.TECHNOFINO_PASSWORD || '';
     this.isSessionAlerted = false;
+    this.consecutiveVipFailures = 0; // Track consecutive VIP Lounge 0-thread scrapes
     
     this.targets = [
       {
         name: 'Technofino VIP Lounge',
         url: 'https://technofino.in/community/forums/vip-credit-card-lounge.30/',
+        isPrivate: true, // Requires login
       },
       {
         name: 'Technofino Credit Cards Hub',
         url: 'https://technofino.in/community/categories/credit-cards.42/',
+        isPrivate: false,
       },
       {
         name: 'Technofino Recent Posts',
         url: 'https://technofino.in/community/whats-new/posts/',
+        isPrivate: false,
       },
     ];
 
@@ -50,13 +59,15 @@ class ForumScraper {
     }
   }
 
+  stop() {
+    // No interval ID stored, but keeping for interface compatibility
+  }
+
   async scrape() {
     logger.info('🔄 Starting Technofino HTTP scrape session...');
     try {
-      const authenticated = await this._ensureAuthenticated();
-      if (!authenticated) {
-        logger.warn('⚠️  Scraping Technofino in GUEST mode (limited/no private lounge access).');
-      }
+      // Step 1: Load cookies directly (no verification request)
+      this._loadCookies();
 
       for (const target of this.targets) {
         await this._scrapeTarget(target);
@@ -69,116 +80,132 @@ class ForumScraper {
     }
   }
 
-  async _ensureAuthenticated() {
-    let cookiesArray = null;
-    
-    // 1. Try loading cookies from SQLite database first
+  /**
+   * FAILPROOF: Simply load cookies from DB or file. No verification request.
+   * The actual VIP Lounge scrape will tell us if they work.
+   */
+  _loadCookies() {
+    // 1. Try loading from SQLite database first
     try {
-      cookiesArray = this.database.getCookies('technofino');
-      if (cookiesArray && Array.isArray(cookiesArray) && cookiesArray.length > 0) {
-        this.cookiesHeader = this._formatCookieHeader(cookiesArray);
-        const isValid = await this._verifySession(cookiesArray);
-        if (isValid) {
-          logger.info('✅ Persistent Technofino session loaded from database and verified!');
-          this.isSessionAlerted = false;
-          return true;
-        }
-        logger.warn('⚠️  Database Technofino session expired or invalid.');
-        cookiesArray = null;
+      const dbCookies = this.database.getCookies('technofino');
+      if (dbCookies && Array.isArray(dbCookies) && dbCookies.length > 0) {
+        this.cookiesHeader = this._formatCookieHeader(dbCookies);
+        logger.info('🔐 Technofino cookies loaded from database (trusted, no verification request).');
+        return;
       }
-    } catch (dbErr) {
-      logger.debug(`Failed to load Technofino cookies from DB: ${dbErr.message}`);
+    } catch (err) {
+      logger.debug(`Failed to load Technofino cookies from DB: ${err.message}`);
     }
 
-    const hasCookiesFile = fs.existsSync(this.cookiePath);
-    // 2. Fallback to legacy cookie file
-    if (!cookiesArray && hasCookiesFile) {
+    // 2. Fallback to file
+    if (fs.existsSync(this.cookiePath)) {
       try {
         const raw = fs.readFileSync(this.cookiePath, 'utf8');
-        cookiesArray = JSON.parse(raw);
+        const cookiesArray = JSON.parse(raw);
         this.cookiesHeader = this._formatCookieHeader(cookiesArray);
-        
-        // Validate if session is active
-        const isValid = await this._verifySession(cookiesArray);
-        if (isValid) {
-          logger.info('✅ Persistent Technofino session loaded from legacy file and verified!');
-          // Seed back into SQLite database
-          this.database.saveCookies('technofino', cookiesArray);
-          this.isSessionAlerted = false; // Reset alert status on successful session check
-          return true;
-        }
-        logger.warn('⚠️  Saved Technofino session expired or invalid.');
+        // Seed into DB for persistence
+        this.database.saveCookies('technofino', cookiesArray);
+        logger.info('🔐 Technofino cookies loaded from legacy file and seeded into DB.');
+        return;
       } catch (err) {
-        logger.error(`Failed to parse Technofino cookies file: ${err.message}`);
+        logger.error(`Failed to load Technofino cookies from file: ${err.message}`);
       }
     }
 
-    // 2. Fallback to username/password autologin via HTTP POST
-    if (this.username && this.password) {
-      logger.info('🔑 Attempting Technofino login via credentials...');
-      try {
-        const loginSucceeded = await this._performLogin();
-        if (loginSucceeded) {
-          logger.info('✅ Automated Technofino login successful!');
-          this.isSessionAlerted = false; // Reset alert status on successful login
-          return true;
-        }
-      } catch (err) {
-        logger.error(`Automated Technofino login failed: ${err.message}`);
-      }
-    }
-
-    // 3. Alert if session was active before but now expired and credentials login failed
-    if (hasCookiesFile || (this.username && this.password)) {
-      if (!this.isSessionAlerted && this.onAlert) {
-        this.onAlert(
-          '⚠️ <b>Technofino Session Expired</b>\n\nYour Technofino forum session cookies have expired or automated credential login failed. Please login to Technofino in your browser, export fresh cookies via EditThisCookie, and paste them into the Web Dashboard to restore authenticated access.'
-        );
-        this.isSessionAlerted = true;
-      }
-    }
-
-    return false;
+    // 3. Try autologin via credentials as a last resort
+    // (We do this synchronously-ish here so that the first scrape can benefit)
+    this.cookiesHeader = '';
+    logger.warn('⚠️  No Technofino cookies found. Will attempt credential login if available.');
   }
 
-  async _verifySession(cookiesArray = null) {
+  async _scrapeTarget(target) {
+    logger.debug(`Scraping Technofino target: "${target.name}"`);
     try {
-      // Fetch What's New which requires user session for full contents
-      const res = await this._executeGetRequest('https://technofino.in/community/whats-new/posts/', cookiesArray);
-      if (!res || !res.data) return false;
+      // If no cookies at all and credentials exist, try login once before first target
+      if (!this.cookiesHeader && this.username && this.password) {
+        logger.info('🔑 Attempting Technofino credential login...');
+        try {
+          const loginSucceeded = await this._performLogin();
+          if (loginSucceeded) {
+            logger.info('✅ Automated Technofino login successful!');
+          }
+        } catch (loginErr) {
+          logger.error(`Automated Technofino login failed: ${loginErr.message}`);
+        }
+      }
+
+      const dbCookies = this.database.getCookies('technofino');
+      const res = await this._executeGetRequest(target.url, dbCookies);
 
       const $ = cheerio.load(res.data);
-      
-      // 1. Check for logged-in indicators
-      const hasMemberNav = $('.p-navgroup--member').length > 0;
-      const hasLogout = $('a[href*="logout"]').length > 0;
-      const isHtmlLoggedIn = $('html[data-logged-in="true"]').length > 0;
-      const hasAccountLink = $('a[href*="account/"]').length > 0;
-      
-      if (hasMemberNav || hasLogout || isHtmlLoggedIn || hasAccountLink) {
-        return true;
-      }
-      
-      // 2. Check for guest indicators
-      const hasGuestNav = $('.p-navgroup--guest').length > 0;
-      const isHtmlGuest = $('html[data-logged-in="false"]').length > 0;
-      
-      if (hasGuestNav || isHtmlGuest) {
-        logger.debug('Technofino session check: Page loaded successfully but detected as GUEST.');
-        return false;
+      const items = [];
+
+      $('.structItem--thread, .structItem--post').each((i, el) => {
+        const row = $(el);
+        const titleEl = row.find('.structItem-title a').last();
+        const authorEl = row.find('.structItem-startDate a, .username').first();
+        const dateEl = row.find('.structItem-startDate time, time[datetime]').first();
+        
+        let link = titleEl.attr('href') || '';
+        if (link && !link.startsWith('http')) {
+          link = 'https://technofino.in' + link;
+        }
+
+        const idMatch = link.match(/\.(\d+)\/?$/);
+        const uniqueId = idMatch ? idMatch[1] : Math.random().toString(36).slice(2);
+
+        if (titleEl.length > 0) {
+          items.push({
+            id: `forum_${uniqueId}`,
+            title: titleEl.text().trim(),
+            author: authorEl.length > 0 ? authorEl.text().trim() : 'Forum User',
+            link: link,
+            datetime: dateEl.attr('datetime') || null
+          });
+        }
+      });
+
+      logger.info(`✅ Found ${items.length} threads in Technofino: "${target.name}"`);
+
+      // Step 3: Judge session health by VIP Lounge results (the canary)
+      if (target.isPrivate) {
+        if (items.length > 0) {
+          this.consecutiveVipFailures = 0;
+          this.isSessionAlerted = false;
+          logger.info('🔓 VIP Lounge access confirmed — session is authenticated!');
+        } else {
+          this.consecutiveVipFailures++;
+          logger.warn(`⚠️  VIP Lounge returned 0 threads (consecutive failures: ${this.consecutiveVipFailures}).`);
+          
+          // Only alert after 2 consecutive VIP failures (90 min of failures)
+          if (this.consecutiveVipFailures >= 2 && !this.isSessionAlerted && this.onAlert) {
+            this.onAlert(
+              '⚠️ <b>Technofino VIP Lounge Access Lost</b>\n\nThe VIP Credit Card Lounge has returned 0 threads for 2 consecutive scrapes, indicating your session has expired. Please login to Technofino in your browser, export fresh cookies via EditThisCookie, and paste them into the Web Dashboard.'
+            );
+            this.isSessionAlerted = true;
+          }
+        }
       }
 
-      // 3. Fallback: if we found threads on the page, the page loaded fine
-      const threadCount = $('.structItem--thread').length;
-      if (threadCount > 0) {
-        logger.debug(`Technofino session check: Loaded page successfully with ${threadCount} threads.`);
-        return true;
+      for (const item of items) {
+        const timestamp = Math.floor(Date.now() / 1000);
+        this.database.saveMessage({
+          messageId: item.id,
+          groupName: target.name,
+          groupId: 'forum_technofino',
+          chatType: 'forum',
+          senderName: item.author,
+          senderNumber: '',
+          body: `${item.title}\nSource: ${item.link}`,
+          timestamp,
+          hasMedia: false,
+          mediaCaption: '',
+          isForwarded: false,
+          sourceType: 'cc-forum'
+        });
       }
-
-      return false;
     } catch (err) {
-      logger.debug(`Technofino session verification check failed: ${err.message}`);
-      return false;
+      logger.error(`Failed to scrape Technofino target "${target.name}": ${err.message}`);
     }
   }
 
@@ -230,85 +257,18 @@ class ForumScraper {
 
     this.cookiesHeader = this._formatCookieHeader(finalCookiesArray);
 
-    // Verify session
-    const success = await this._verifySession();
-    if (success) {
-      // Save cookies to SQLite database for 100% persistence
-      this.database.saveCookies('technofino', finalCookiesArray);
+    // Save cookies to SQLite database for 100% persistence
+    this.database.saveCookies('technofino', finalCookiesArray);
 
-      // Save cookies to disk as fallback
-      try {
-        const dir = path.dirname(this.cookiePath);
-        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-        fs.writeFileSync(this.cookiePath, JSON.stringify(finalCookiesArray, null, 2), 'utf8');
-      } catch (fileErr) {
-        logger.debug(`Could not write Technofino cookies to file: ${fileErr.message}`);
-      }
-      return true;
-    } else {
-      // Check for error blocks in page redirects if possible
-      const errorHtml = cheerio.load(postRes.data);
-      const errorText = errorHtml('.block-row--error').text().trim();
-      throw new Error(errorText || 'Authentication redirect succeeded but verification page lacks logout link.');
-    }
-  }
-
-  async _scrapeTarget(target) {
-    logger.debug(`Scraping Technofino target: "${target.name}"`);
+    // Save cookies to disk as fallback
     try {
-      const dbCookies = this.database.getCookies('technofino');
-      const res = await this._executeGetRequest(target.url, dbCookies);
-
-      const $ = cheerio.load(res.data);
-      const items = [];
-
-      $('.structItem--thread, .structItem--post').each((i, el) => {
-        const row = $(el);
-        const titleEl = row.find('.structItem-title a').last();
-        const authorEl = row.find('.structItem-startDate a, .username').first();
-        const dateEl = row.find('.structItem-startDate time, time[datetime]').first();
-        
-        let link = titleEl.attr('href') || '';
-        if (link && !link.startsWith('http')) {
-          link = 'https://technofino.in' + link;
-        }
-
-        const idMatch = link.match(/\.(\d+)\/?$/);
-        const uniqueId = idMatch ? idMatch[1] : Math.random().toString(36).slice(2);
-
-        if (titleEl.length > 0) {
-          items.push({
-            id: `forum_${uniqueId}`,
-            title: titleEl.text().trim(),
-            author: authorEl.length > 0 ? authorEl.text().trim() : 'Forum User',
-            link: link,
-            datetime: dateEl.attr('datetime') || null
-          });
-        }
-      });
-
-      logger.info(`✅ Found ${items.length} threads in Technofino: "${target.name}"`);
-
-      for (const item of items) {
-        const timestamp = Math.floor(Date.now() / 1000);
-        this.database.saveMessage({
-          messageId: item.id,
-          groupName: target.name,
-          groupId: 'forum_technofino',
-          chatType: 'forum',
-          senderName: item.author,
-          senderNumber: '',
-          body: `${item.title}\nSource: ${item.link}`,
-          timestamp,
-          hasMedia: false,
-          mediaCaption: '',
-          isForwarded: false,
-          sourceType: 'cc-forum'
-        });
-      }
-    } catch (err) {
-      logger.error(`Failed to scrape Technofino target "${target.name}": ${err.message}`);
+      const dir = path.dirname(this.cookiePath);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(this.cookiePath, JSON.stringify(finalCookiesArray, null, 2), 'utf8');
+    } catch (fileErr) {
+      logger.debug(`Could not write Technofino cookies to file: ${fileErr.message}`);
     }
+    return true;
   }
 
   _parseSetCookies(setCookieHeader) {
@@ -317,7 +277,7 @@ class ForumScraper {
       const parts = str.split(';')[0].split('=');
       return {
         name: parts[0].trim(),
-        value: parts[1].trim()
+        value: parts.slice(1).join('=').trim()
       };
     });
   }
@@ -350,17 +310,7 @@ class ForumScraper {
         });
         if (res.data && res.data.status === 'ok' && res.data.solution) {
           if (res.data.solution.cookies) {
-            const html = res.data.solution.response || '';
-            const $ = cheerio.load(html);
-            const hasMemberNav = $('.p-navgroup--member').length > 0;
-            const hasLogout = $('a[href*="logout"]').length > 0;
-            const isHtmlLoggedIn = $('html[data-logged-in="true"]').length > 0;
-            const hasAccountLink = $('a[href*="account/"]').length > 0;
-            const threadCount = $('.structItem--thread').length;
-            
-            const isAuthed = hasMemberNav || hasLogout || isHtmlLoggedIn || hasAccountLink || (threadCount > 0 && url.includes('vip-credit-card-lounge'));
-            
-            this._saveUpdatedCookies(res.data.solution.cookies, isAuthed);
+            this._saveUpdatedCookies(res.data.solution.cookies, cookiesArray);
           }
           return { data: res.data.solution.response };
         }
@@ -379,38 +329,37 @@ class ForumScraper {
     });
   }
 
-  _saveUpdatedCookies(newCookies, isAuthenticated = true) {
+  /**
+   * FAILPROOF cookie merge: Essential auth cookies (xf_user, xf_session)
+   * from your imported set are NEVER overwritten by FlareSolverr.
+   * Only Cloudflare bypass tokens (cf_clearance) are updated.
+   */
+  _saveUpdatedCookies(newCookies, originalCookiesFromDB) {
     if (!newCookies || !Array.isArray(newCookies)) return;
     try {
-      const originalCookies = this.database.getCookies('technofino') || [];
-      const mergedCookies = this._mergeCookies(originalCookies, newCookies, ['xf_user', 'xf_session'], isAuthenticated);
+      const originalCookies = originalCookiesFromDB || this.database.getCookies('technofino') || [];
+      const essentialKeys = ['xf_user', 'xf_session', 'xf_csrf', 'xf_notice_dismiss'];
 
+      const mergedMap = {};
+      // Original cookies are the base — they have precedence for essential keys
+      originalCookies.forEach(c => { mergedMap[c.name] = c; });
+
+      newCookies.forEach(c => {
+        // NEVER overwrite essential auth tokens from FlareSolverr responses
+        if (essentialKeys.includes(c.name) && mergedMap[c.name]) {
+          logger.debug(`[FlareSolverr] Preserving original session cookie: ${c.name}`);
+          return;
+        }
+        mergedMap[c.name] = c;
+      });
+
+      const mergedCookies = Object.values(mergedMap);
       this.database.saveCookies('technofino', mergedCookies);
       this.cookiesHeader = this._formatCookieHeader(mergedCookies);
-      logger.debug(`💾 [FlareSolverr] Successfully merged and updated cookies in database. Authenticated: ${isAuthenticated}`);
+      logger.debug('💾 [FlareSolverr] Merged non-essential cookies (preserved auth tokens).');
     } catch (e) {
       logger.debug(`Failed to save updated cookies from FlareSolverr: ${e.message}`);
     }
-  }
-
-  _mergeCookies(originalCookies, newCookies, essentialKeys, isAuthenticated = true) {
-    if (!newCookies || !Array.isArray(newCookies)) return originalCookies;
-    if (!originalCookies || !Array.isArray(originalCookies)) return newCookies;
-
-    const mergedMap = {};
-    originalCookies.forEach(c => { mergedMap[c.name] = c; });
-
-    newCookies.forEach(c => {
-      // If the response is NOT authenticated, preserve the original login session cookies!
-      // Do not overwrite them with guest cookies.
-      if (essentialKeys.includes(c.name) && !isAuthenticated) {
-        logger.debug(`[FlareSolverr] Preserving original session cookie: ${c.name}`);
-        return;
-      }
-      mergedMap[c.name] = c;
-    });
-
-    return Object.values(mergedMap);
   }
 }
 
