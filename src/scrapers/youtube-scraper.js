@@ -212,10 +212,18 @@ class YoutubeScraper {
           downloadOptions.agent = ytdlAgent;
         }
 
-        ytdl(`https://www.youtube.com/watch?v=${videoId}`, downloadOptions)
-        .pipe(fs.createWriteStream(outputPath))
-        .on('finish', () => resolve())
-        .on('error', (err) => reject(err));
+        const stream = ytdl(`https://www.youtube.com/watch?v=${videoId}`, downloadOptions);
+        
+        // CRITICAL: Catch errors directly on the ytdl stream to prevent process crash
+        stream.on('error', (err) => {
+          reject(err);
+        });
+
+        const fileStream = fs.createWriteStream(outputPath);
+        fileStream.on('finish', () => resolve());
+        fileStream.on('error', (err) => reject(err));
+
+        stream.pipe(fileStream);
       });
 
       const audioBytes = fs.readFileSync(outputPath);
