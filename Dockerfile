@@ -3,10 +3,15 @@ FROM node:20-slim AS builder
 
 WORKDIR /app
 
+# Install standard compiler tools for compiling better-sqlite3 from source on ARM64
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends python3 make g++ gcc libc6-dev && \
+    rm -rf /var/lib/apt/lists/*
+
 # Copy package descriptors
 COPY package*.json ./
 
-# Install dependencies (Downloads precompiled better-sqlite3 binary for glibc automatically)
+# Install dependencies (will successfully compile better-sqlite3 from source on ARM64)
 RUN npm install --omit=dev
 
 # ─── STAGE 2: RUNTIME ───────────────────────────────────────────────────
