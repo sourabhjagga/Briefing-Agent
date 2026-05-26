@@ -1,0 +1,35 @@
+{
+  "name": "cc-and-deals-briefing-agent",
+  "version": "1.0.0",
+  "description": "Clean-slate credit card and deals briefing agent using Node.js, SQLite, Baileys, GramJS, and Gemini API",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node src/index.js"
+  },
+  "keywords": [
+    "credit-cards",
+    "deals",
+    "agent",
+    "whatsapp",
+    "telegram",
+    "scraper",
+    "gemini",
+    "sqlite"
+  ],
+  "author": "Sourabh Jagga",
+  "license": "MIT",
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.18",
+    "axios": "^1.7.2",
+    "better-sqlite3": "^9.6.0",
+    "cheerio": "^1.0.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "gramjs": "^2.22.6",
+    "node-cron": "^3.0.3",
+    "pino": "^9.4.0",
+    "telegraf": "^4.16.3",
+    "youtube-transcript": "^1.2.1"
+  }
+}

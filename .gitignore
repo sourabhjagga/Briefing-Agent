@@ -1,0 +1,17 @@
+node_modules
+.env
+.env.production
+.env.local
+data/*.db
+data/telegram_user_session.txt
+data/*_cookies.json
+logs/*.log
+npm-debug.log
+.DS_Store
+.idea
+.vscode
+cc_agent_ssh_key*
+ssh-key*
+*.key
+*.pem
+*.zip
