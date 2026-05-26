@@ -227,6 +227,14 @@ STRICT RULES:
 
     const today = this._todayLabel();
 
+    // Extract all deal URLs from the raw messages into an explicit reference map.
+    // This is injected into the prompt so the AI can reliably attach links to deals.
+    const urlMap = this._extractDealUrls(groupedMessages);
+    const urlMapEntries = Object.entries(urlMap);
+    const urlMapSection = urlMapEntries.length > 0
+      ? `\n⚠️ DEAL URL REFERENCE MAP — CRITICAL:\nEvery deal listed below MUST use the exact URL from this map for its <a href> link.\nDO NOT invent, omit, or modify any URL. Copy them character-for-character.\n${urlMapEntries.map(([title, url]) => `• ${title}\n  URL: ${url}`).join('\n')}\n`
+      : '';
+
     if (customPrompt) {
       return `You are a premium briefing specialist AI.
 Your specific persona/instructions:
@@ -234,7 +242,7 @@ ${customPrompt}
 
 SOURCES MONITORED TODAY:
 ${Object.keys(groupedMessages).map(g => `• ${g}`).join('\n')}
-
+${urlMapSection}
 MESSAGES DATA:
 ${messageText}
 
@@ -248,7 +256,7 @@ OUTPUT FORMAT (strict Telegram HTML — no markdown):
 
 STRICT RULES:
 - ONLY use Telegram-safe HTML tags: <b>, <i>, <code>, <u>, <s>, <a>. Nothing else. Do NOT use markdown.
-- For all links, ALWAYS use clean HTML hyperlinks wrapping contextual anchor text, e.g. <a href="URL">View Deal</a> or <a href="URL">Get Deal</a>. DO NOT print plain-text words like "View Deal" or "Get Deal" without the <a> anchor tag, and NEVER output raw plain URLs in the final text.
+- 🔗 LINKS ARE MANDATORY: Every single deal item MUST end with an <a href="EXACT_URL_FROM_MAP">View Deal</a> or <a href="EXACT_URL_FROM_MAP">Get Deal</a> link. Use the DEAL URL REFERENCE MAP above to find the correct URL for each deal. If a deal has no URL in the map, omit that deal entirely — do NOT include it without a link.
 - Format all prices in bold (e.g., <b>₹2,316</b>) and wrap bank card names in bold (e.g. <b>SBI Card</b>).
 - Wrap platform names, coupons, or steps in <code>code</code> tags.
 - DO NOT hallucinate. Every link, name, and price MUST correspond exactly to the MESSAGES DATA above.`;
@@ -302,6 +310,52 @@ STRICT RULES:
 - Use <code>code</code> for biller IDs, platform names, steps.
 - Use ₹ (Rupee symbol) for all amounts.
 - DO NOT hallucinate. Base all content strictly on the messages above.`;
+  }
+
+  /**
+   * Extracts all <a href="URL"> links from message bodies into a flat title→URL map.
+   * Used to build the URL Reference Map injected into AI prompts to prevent link loss.
+   */
+  _extractDealUrls(groupedMessages) {
+    const urlMap = {};
+    // Match any <a href="URL"> tag in the message body
+    const anchorRegex = /<a\s+href="([^"]+)"[^>]*>/i;
+    // Match the deal title line: either after "<b>Deal:</b>" or the first meaningful bold text
+    const titlePatterns = [
+      /🔥\s*<b>Deal:<\/b>\s*([^\n<]{5,100})/,  // DesiDime format
+      /📌\s*<b>Title:<\/b>\s*([^\n<]{5,100})/,  // Other format
+      /•\s*<b>([^<]{5,100})<\/b>/,               // Generic bold title
+    ];
+
+    for (const msgs of Object.values(groupedMessages)) {
+      for (const msg of msgs) {
+        if (!msg.body) continue;
+        const anchorMatch = anchorRegex.exec(msg.body);
+        if (!anchorMatch) continue;
+        const url = anchorMatch[1];
+        if (!url || !url.startsWith('http')) continue;
+
+        // Try each title pattern in order
+        let title = null;
+        for (const pattern of titlePatterns) {
+          const m = msg.body.match(pattern);
+          if (m) {
+            title = m[1].replace(/<[^>]+>/g, '').trim().substring(0, 80);
+            break;
+          }
+        }
+
+        // Fallback: use the first 60 non-HTML chars of the body as the key
+        if (!title) {
+          title = msg.body.replace(/<[^>]+>/g, '').trim().split('\n')[0].substring(0, 80);
+        }
+
+        if (title) {
+          urlMap[title] = url;
+        }
+      }
+    }
+    return urlMap;
   }
 
   _smartSample(messages, maxCount) {
