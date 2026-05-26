@@ -154,7 +154,6 @@ class RedditScraper {
       this.isSessionAlerted = false; // Reset alert status on successful session
 
       // 2. Fetch target HTML page using session cookies
-      const dbCookies = this.database.getCookies('reddit');
       const res = await this._executeGetRequest(`https://www.reddit.com/r/${sub}/new/`, dbCookies);
 
       const $ = cheerio.load(res.data);
