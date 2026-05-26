@@ -58,8 +58,10 @@ class DealsScraper {
       await page.goto(this.targetUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
 
       // 4. Stagger and wait for content/selectors to settle
+      // Use a broad selector that covers DesiDime's current and legacy DOM layouts
+      const PRIMARY_SELECTOR = 'li.post-unit, article.deal-card, .deal-item, .post-card, .thread-item, div[class*="deal"]';
       try {
-        await page.waitForSelector('li.post-unit, a[href*="/deals/"]', { timeout: 15000 });
+        await page.waitForSelector(`${PRIMARY_SELECTOR}, a[href*="/deals/"]`, { timeout: 15000 });
       } catch (e) {
         logger.debug(`Timeout waiting for primary selector. Processing current DOM structure...`);
       }
@@ -73,20 +75,29 @@ class DealsScraper {
       const $ = cheerio.load(html);
       const deals = [];
 
-      // Parse actual DesiDime DOM elements (li.post-unit)
-      $('li.post-unit').each((i, el) => {
-        if (i >= 20) return; // Limit to latest 20
+      // Parse DesiDime deal items — covers multiple DOM layout versions
+      $(PRIMARY_SELECTOR).each((i, el) => {
+        if (i >= 25) return; // Limit to latest 25
         const row = $(el);
-        const titleEl = row.find('.post-unit__title a, a.post-link').first();
-        const descEl = row.find('.post-unit__merchant-link, .post-unit__description').first();
-        const priceEl = row.find('.post-unit__price, .deal-price, .discount').first();
+        // Title link — try multiple class patterns
+        const titleEl = row.find(
+          '.post-unit__title a, a.post-link, .deal-card__title a, .deal-item__title a, h2 a, h3 a, .title a'
+        ).first();
+        // Description / merchant
+        const descEl = row.find(
+          '.post-unit__merchant-link, .post-unit__description, .deal-card__merchant, .deal-description'
+        ).first();
+        // Price / discount
+        const priceEl = row.find(
+          '.post-unit__price, .deal-price, .discount, .deal-card__price, [class*="price"], [class*="discount"]'
+        ).first();
 
         let link = titleEl.attr('href') || '';
         if (link && !link.startsWith('http')) {
           link = 'https://www.desidime.com' + link;
         }
 
-        if (titleEl.length > 0) {
+        if (titleEl.length > 0 && titleEl.text().trim().length > 5) {
           deals.push({
             title: titleEl.text().trim(),
             link: link,

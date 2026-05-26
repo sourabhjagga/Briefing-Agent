@@ -397,12 +397,43 @@ STRICT RULES:
 
   _formatSummary(text) {
     let summary = text.trim();
-    summary = summary.replace(/\*\*(.*?)\*\*/g, '<b>$1</b>');
-    summary = summary.replace(/\*(.*?)\*/g, '<i>$1</i>');
-    summary = summary.replace(/__(.*?)__/g, '<u>$1</u>');
-    // Strip any other unsafe HTML tags (leaving only Telegram safe tags)
+    // Convert any residual markdown to Telegram-safe HTML
+    summary = summary.replace(/\*\*(.*?)\*\*/gs, '<b>$1</b>');
+    summary = summary.replace(/(?<!\*)\*(?!\*)(.*?)(?<!\*)\*(?!\*)/gs, '<i>$1</i>');
+    summary = summary.replace(/__(.*?)__/gs, '<u>$1</u>');
+    // Strip any unsafe HTML tags (keep only Telegram-safe ones)
     summary = summary.replace(/<\/?(?!(?:b|i|code|a|u|s|pre|em|strong|ins|del)\b)[^>]+>/g, '');
+    // Repair unclosed tags to prevent Telegram 400 parse errors
+    summary = this._repairTelegramHtml(summary);
     return summary;
+  }
+
+  /**
+   * Balances unclosed HTML tags in AI-generated text to prevent Telegram
+   * '400: Can't find end tag' errors. Counts open vs close occurrences
+   * for each allowed tag and appends or trims the difference.
+   */
+  _repairTelegramHtml(html) {
+    const pairedTags = ['b', 'i', 'u', 's', 'code', 'pre', 'em', 'strong', 'a'];
+    for (const tag of pairedTags) {
+      const openRegex  = new RegExp(`<${tag}(\\s[^>]*)?>`, 'gi');
+      const closeRegex = new RegExp(`</${tag}>`, 'gi');
+      const openCount  = (html.match(openRegex)  || []).length;
+      const closeCount = (html.match(closeRegex) || []).length;
+
+      if (openCount > closeCount) {
+        // Append the missing closing tags at the very end
+        html += `</${tag}>`.repeat(openCount - closeCount);
+      } else if (closeCount > openCount) {
+        // Strip excess closing tags from the end (keep first openCount occurrences)
+        let seen = 0;
+        html = html.replace(new RegExp(`</${tag}>`, 'gi'), (match) => {
+          seen++;
+          return seen <= openCount ? match : '';
+        });
+      }
+    }
+    return html;
   }
 
   _todayLabel() {
