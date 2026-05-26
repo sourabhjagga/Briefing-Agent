@@ -200,7 +200,20 @@ class WhatsAppListener {
           if (shouldReconnect) {
             setTimeout(() => this.start(), 10000); // 10 seconds backoff
           } else {
-            logger.error('‼️ WhatsApp session logged out. Please clear data/baileys_auth and re-scan.');
+            logger.error('‼️ WhatsApp session logged out. Automatically clearing session and generating fresh QR code...');
+            try {
+              if (fs.existsSync(this.authPath)) {
+                fs.rmSync(this.authPath, { recursive: true, force: true });
+                logger.info('🧹 Successfully cleared baileys_auth credentials folder.');
+              }
+              // Wait 5 seconds and restart socket in clean state to generate fresh QR
+              setTimeout(() => {
+                logger.info('🔄 Restarting WhatsApp socket in clean state to generate fresh QR...');
+                this.start();
+              }, 5000);
+            } catch (err) {
+              logger.error(`Failed to automatically clear auth path: ${err.message}`);
+            }
           }
         } else if (connection === 'open') {
           this.isReady = true;
