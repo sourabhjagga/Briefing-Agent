@@ -11,9 +11,9 @@ const path = require('path');
 const logger = require('../logger');
 
 class RedditScraper {
-  constructor(database, telegramCC) {
+  constructor(database, onAlert) {
     this.database = database;
-    this.telegramCC = telegramCC;
+    this.onAlert = onAlert;
     this.cookiePath = path.resolve(__dirname, '../../data/reddit_cookies.json');
     this.checkInterval = 15 * 60 * 1000; // 15 minutes
     
@@ -122,10 +122,16 @@ class RedditScraper {
       // 1. Validate if cookies are active
       const isSessionActive = await this._verifyRedditSession();
       if (!isSessionActive) {
-        if (!this.isSessionAlerted && this.telegramCC) {
-          await this.telegramCC.sendMessage(
-            '⚠️ <b>Reddit Session Expired</b>\n\nYour Reddit scraper session cookies have expired or are invalid. Please login to Reddit in your browser, export fresh cookies via EditThisCookie, and paste them into the Web Dashboard to resume authenticated scraping.'
-          ).catch(() => {});
+        if (!this.isSessionAlerted && this.onAlert) {
+          if (typeof this.onAlert === 'function') {
+            this.onAlert(
+              '⚠️ <b>Reddit Session Expired</b>\n\nYour Reddit scraper session cookies have expired or are invalid. Please login to Reddit in your browser, export fresh cookies via EditThisCookie, and paste them into the Web Dashboard to resume authenticated scraping.'
+            );
+          } else if (typeof this.onAlert.sendMessage === 'function') {
+            await this.onAlert.sendMessage(
+              '⚠️ <b>Reddit Session Expired</b>\n\nYour Reddit scraper session cookies have expired or are invalid. Please login to Reddit in your browser, export fresh cookies via EditThisCookie, and paste them into the Web Dashboard to resume authenticated scraping.'
+            ).catch(() => {});
+          }
           this.isSessionAlerted = true;
         }
         return false;

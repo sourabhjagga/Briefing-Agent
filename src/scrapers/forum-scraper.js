@@ -11,13 +11,15 @@ const path = require('path');
 const logger = require('../logger');
 
 class ForumScraper {
-  constructor(database) {
+  constructor(database, onAlert) {
     this.database = database;
+    this.onAlert = onAlert;
     this.cookiePath = path.resolve(__dirname, '../../data/technofino_cookies.json');
     this.checkInterval = 45 * 60 * 1000; // 45 minutes
     
     this.username = process.env.TECHNOFINO_USERNAME || '';
     this.password = process.env.TECHNOFINO_PASSWORD || '';
+    this.isSessionAlerted = false;
     
     this.targets = [
       {
@@ -68,8 +70,9 @@ class ForumScraper {
   }
 
   async _ensureAuthenticated() {
+    const hasCookiesFile = fs.existsSync(this.cookiePath);
     // 1. Try loading cookies from file
-    if (fs.existsSync(this.cookiePath)) {
+    if (hasCookiesFile) {
       try {
         const raw = fs.readFileSync(this.cookiePath, 'utf8');
         const cookiesArray = JSON.parse(raw);
@@ -79,6 +82,7 @@ class ForumScraper {
         const isValid = await this._verifySession();
         if (isValid) {
           logger.info('✅ Persistent Technofino session loaded and verified!');
+          this.isSessionAlerted = false; // Reset alert status on successful session check
           return true;
         }
         logger.warn('⚠️  Saved Technofino session expired or invalid.');
@@ -94,10 +98,21 @@ class ForumScraper {
         const loginSucceeded = await this._performLogin();
         if (loginSucceeded) {
           logger.info('✅ Automated Technofino login successful!');
+          this.isSessionAlerted = false; // Reset alert status on successful login
           return true;
         }
       } catch (err) {
         logger.error(`Automated Technofino login failed: ${err.message}`);
+      }
+    }
+
+    // 3. Alert if session was active before but now expired and credentials login failed
+    if (hasCookiesFile || (this.username && this.password)) {
+      if (!this.isSessionAlerted && this.onAlert) {
+        this.onAlert(
+          '⚠️ <b>Technofino Session Expired</b>\n\nYour Technofino forum session cookies have expired or automated credential login failed. Please login to Technofino in your browser, export fresh cookies via EditThisCookie, and paste them into the Web Dashboard to restore authenticated access.'
+        );
+        this.isSessionAlerted = true;
       }
     }
 

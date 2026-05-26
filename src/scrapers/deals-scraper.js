@@ -11,13 +11,15 @@ const path = require('path');
 const logger = require('../logger');
 
 class DealsScraper {
-  constructor(database) {
+  constructor(database, onAlert) {
     this.database = database;
+    this.onAlert = onAlert;
     this.cookiePath = path.resolve(__dirname, '../../data/desidime_cookies.json');
     this.checkInterval = 15 * 60 * 1000; // 15 minutes
     
     this.username = process.env.DESIDIME_USERNAME || '';
     this.password = process.env.DESIDIME_PASSWORD || '';
+    this.isSessionAlerted = false;
     
     this.loginUrl = 'https://www.desidime.com/users/sign_in';
     this.targetUrl = 'https://www.desidime.com/forums/hot-deals-online';
@@ -144,8 +146,9 @@ class DealsScraper {
   }
 
   async _ensureAuthenticated() {
+    const hasCookiesFile = fs.existsSync(this.cookiePath);
     // 1. Try loading cookies from disk
-    if (fs.existsSync(this.cookiePath)) {
+    if (hasCookiesFile) {
       try {
         const raw = fs.readFileSync(this.cookiePath, 'utf8');
         const cookiesArray = JSON.parse(raw);
@@ -155,6 +158,7 @@ class DealsScraper {
         const isValid = await this._verifySession();
         if (isValid) {
           logger.info('✅ Persistent DesiDime session cookies verified.');
+          this.isSessionAlerted = false; // Reset alert status on successful session check
           return true;
         }
         logger.warn('⚠️  Saved DesiDime session expired or invalid.');
@@ -170,10 +174,21 @@ class DealsScraper {
         const success = await this._performLogin();
         if (success) {
           logger.info('✅ DesiDime autologin succeeded!');
+          this.isSessionAlerted = false; // Reset alert status on successful login
           return true;
         }
       } catch (err) {
         logger.error(`DesiDime credentials autologin failed: ${err.message}`);
+      }
+    }
+
+    // 3. Alert if session was active before but now expired and credentials login failed
+    if (hasCookiesFile || (this.username && this.password)) {
+      if (!this.isSessionAlerted && this.onAlert) {
+        this.onAlert(
+          '⚠️ <b>DesiDime Session Expired</b>\n\nYour DesiDime deals session cookies have expired or automated credential login failed. Please login to DesiDime in your browser, export fresh cookies via EditThisCookie, and paste them into the Web Dashboard to restore authenticated access.'
+        );
+        this.isSessionAlerted = true;
       }
     }
 

@@ -12,10 +12,12 @@ const fs = require('fs');
 const logger = require('./logger');
 
 class WhatsAppListener {
-  constructor(database) {
+  constructor(database, onAlert) {
     this.database = database;
+    this.onAlert = onAlert;
     this.isReady = false;
     this.messageCount = 0;
+    this.isSessionAlerted = false;
     this.sock = null;
     this.targetIds = new Set();
     this.authPath = path.resolve(__dirname, '../data/baileys_auth');
@@ -182,6 +184,16 @@ class WhatsAppListener {
           
           logger.warn(`❌ WhatsApp connection closed. Reason: ${errorMessage || 'unknown'} (${errorDetail}). Code: ${statusCode}. Reconnecting: ${shouldReconnect}`);
           
+          if (!this.isSessionAlerted && this.onAlert) {
+            if (!shouldReconnect) {
+              this.onAlert('📱 <b>WhatsApp Session Expired / Logged Out</b>\n\nYour WhatsApp session has been logged out. Please open the Web Dashboard and re-scan the QR code.');
+              this.isSessionAlerted = true;
+            } else {
+              this.onAlert(`⚠️ <b>WhatsApp Connection Closed</b>\n\nReason: ${errorMessage || 'unknown'} (${errorDetail})\nCode: ${statusCode}\nReconnecting: ${shouldReconnect}`);
+              this.isSessionAlerted = true;
+            }
+          }
+
           if (shouldReconnect) {
             setTimeout(() => this.start(), 10000); // 10 seconds backoff
           } else {
@@ -189,6 +201,7 @@ class WhatsAppListener {
           }
         } else if (connection === 'open') {
           this.isReady = true;
+          this.isSessionAlerted = false; // Reset alert status on successful connection
           logger.info('✅ WhatsApp socket client successfully connected!');
           await this._discoverChats();
         }

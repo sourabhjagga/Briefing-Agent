@@ -435,16 +435,29 @@ async function main() {
   // 4. Create bot instances for ALL active categories
   const botInstances = createBotInstances(database, summarizer);
 
+  // Central Session Alert Dispatcher (routes to primary CC Telegram Bot)
+  const sendSystemAlert = async (message) => {
+    logger.warn(`🚨 [System Alert] ${message}`);
+    const ccBotInstance = botInstances.get('cc');
+    if (ccBotInstance) {
+      try {
+        await ccBotInstance.sendMessage(`🚨 <b>Session Alert</b>\n\n${message}`);
+      } catch (err) {
+        logger.error(`Failed to send Telegram system alert: ${err.message}`);
+      }
+    }
+  };
+
   // 5. Initialize active ingestion observers
-  const whatsapp = new WhatsAppListener(database);
-  const telegramUser = new TelegramUserListener(database);
+  const whatsapp = new WhatsAppListener(database, sendSystemAlert);
+  const telegramUser = new TelegramUserListener(database, sendSystemAlert);
   const scheduler = new Scheduler(summarizer, botInstances, database);
 
   // 6. Initialize lightweight scrapers (Puppeteer-free)
   const ccBot = botInstances.get('cc');
-  const forumScraper = new ForumScraper(database);
-  const dealsScraper = new DealsScraper(database);
-  const redditScraper = new RedditScraper(database, ccBot);
+  const forumScraper = new ForumScraper(database, sendSystemAlert);
+  const dealsScraper = new DealsScraper(database, sendSystemAlert);
+  const redditScraper = new RedditScraper(database, sendSystemAlert);
   const youtubeScraper = new YoutubeScraper(database, summarizer);
 
   // 7. Start Express server immediately to let Coolify healthchecks pass

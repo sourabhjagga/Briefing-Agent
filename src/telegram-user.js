@@ -11,8 +11,9 @@ const path = require('path');
 const logger = require('./logger');
 
 class TelegramUserListener {
-  constructor(database) {
+  constructor(database, onAlert) {
     this.database = database;
+    this.onAlert = onAlert;
     this.sessionPath = path.resolve(__dirname, '../data/telegram_user_session.txt');
     
     // Dynamic override from env with high-priority custom credential binding
@@ -40,6 +41,7 @@ class TelegramUserListener {
     this.isReady = false;
     this.tempPhone = null;
     this.tempHash = null;
+    this.isSessionAlerted = false;
   }
 
   async start() {
@@ -66,11 +68,16 @@ class TelegramUserListener {
 
       if (isAuthorized) {
         this.isReady = true;
+        this.isSessionAlerted = false; // Reset alert status on successful startup
         logger.info('✅ Personal Telegram account successfully connected (Session loaded)!');
         this.scrapePrivateChannels();
         setInterval(() => this.scrapePrivateChannels(), 10 * 60 * 1000); // Scrape every 10 min
       } else {
         logger.warn('⚠️ Telegram personal account session is expired or invalid. Please log in again.');
+        if (!this.isSessionAlerted && this.onAlert) {
+          this.onAlert('📱 <b>Telegram User Session Expired</b>\n\nYour personal Telegram account session has expired or is invalid. Please log in again via the Web Dashboard.');
+          this.isSessionAlerted = true;
+        }
       }
     } catch (err) {
       logger.error(`Failed to initialize Telegram User listener: ${err.message}`);
@@ -225,6 +232,19 @@ class TelegramUserListener {
     
     logger.info('📡 Starting personal Telegram channels scrape session...');
     try {
+      // Live session check
+      const isAuthorized = await this.client.isUserAuthorized().catch(() => false);
+      if (!isAuthorized) {
+        this.isReady = false;
+        logger.warn('⚠️ Telegram user session lost during scrape.');
+        if (!this.isSessionAlerted && this.onAlert) {
+          this.onAlert('📱 <b>Telegram User Session Lost</b>\n\nYour personal Telegram account session was disconnected or terminated. Please log in again via the Web Dashboard.');
+          this.isSessionAlerted = true;
+        }
+        return;
+      }
+      this.isSessionAlerted = false; // Reset if validation passes
+
       const allSources = this.database.getAllSources();
       // Filter for active Telegram sources
       const activeTelegram = allSources.filter(
