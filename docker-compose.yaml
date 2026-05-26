@@ -1,0 +1,48 @@
+version: '3.8'
+
+services:
+  cc-brief-agent:
+    build: .
+    container_name: cc-brief-agent
+    restart: unless-stopped
+    # Consolidated single volume mount to persist all SQLite DBs, WhatsApp, and Telegram sessions
+    volumes:
+      - cc_brief_data_test:/app/data
+    ports:
+      - "3001:3000"
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - DEALS_BOT_TOKEN=${DEALS_BOT_TOKEN}
+      - SUMMARY_HOUR=${SUMMARY_HOUR:-6}
+      - SUMMARY_MINUTE=${SUMMARY_MINUTE:-0}
+      - WHATSAPP_GROUPS=${WHATSAPP_GROUPS}
+      - TZ=${TZ:-Asia/Kolkata}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - MAX_MESSAGES_FOR_SUMMARY=${MAX_MESSAGES_FOR_SUMMARY:-2000}
+      - DB_PATH=/app/data/messages.db
+      - TECHNOFINO_USERNAME=${TECHNOFINO_USERNAME}
+      - TECHNOFINO_PASSWORD=${TECHNOFINO_PASSWORD}
+      - DESIDIME_USERNAME=${DESIDIME_USERNAME}
+      - DESIDIME_PASSWORD=${DESIDIME_PASSWORD}
+      - REDDIT_USERNAME=${REDDIT_USERNAME}
+      - REDDIT_PASSWORD=${REDDIT_PASSWORD}
+      - TELEGRAM_API_ID=${TELEGRAM_API_ID}
+      - TELEGRAM_API_HASH=${TELEGRAM_API_HASH}
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/health').then(r => r.ok ? process.exit(0) : process.exit(1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+
+volumes:
+  cc_brief_data_test:
+    name: cc_brief_data_test
