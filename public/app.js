@@ -295,12 +295,10 @@ function SchedulePage({ categories, scheduler }) {
   };
 
   const toggleRule = async (id, current) => {
-    // FIX #1 (toggle): send only is_active — backend now handles partial PATCH
     await api.patch(`/api/schedules/${id}`, { is_active: !current });
     loadRules();
   };
 
-  // FIX #1: was /api/trigger — now correctly calls /api/schedules/trigger
   const triggerNow = async (slug) => {
     setTriggering(slug);
     try {
@@ -370,9 +368,9 @@ function SchedulePage({ categories, scheduler }) {
 }
 
 // ---- SOURCES PAGE ---- //
-// FIX #2: source types are now generated dynamically from categories
+const PLATFORM_SUFFIXES = ['whatsapp', 'telegram', 'reddit', 'youtube', 'forum'];
+
 function buildSourceTypes(categories) {
-  const PLATFORM_SUFFIXES = ['whatsapp', 'telegram', 'reddit', 'youtube', 'forum'];
   const types = [];
   for (const cat of categories) {
     for (const suffix of PLATFORM_SUFFIXES) {
@@ -394,19 +392,87 @@ function typeBadgeClass(type) {
   return TYPE_BADGE_MAP[suffix] || 'badge-gray';
 }
 
+// FIX #2: AddSourceModal fetches /api/categories fresh on mount so the
+// type dropdown always reflects the live category list, not the stale
+// App-level state that may still be [] when the modal first opens.
+function AddSourceModal({ onClose, onSaved }) {
+  const [liveCategories, setLiveCategories] = useState([]);
+  const [loadingCats, setLoadingCats] = useState(true);
+  const [newSource, setNewSource] = useState({ name: '', source_id: '', type: '' });
+  const [saving, setSaving] = useState(false);
+  const [alert, setAlert] = useState(null);
+
+  useEffect(() => {
+    api.get('/api/categories')
+      .then(cats => {
+        setLiveCategories(Array.isArray(cats) ? cats : []);
+      })
+      .catch(() => setLiveCategories([]))
+      .finally(() => setLoadingCats(false));
+  }, []);
+
+  const allTypeOptions = buildSourceTypes(liveCategories);
+
+  const addSource = async () => {
+    if (!newSource.name || !newSource.source_id || !newSource.type) {
+      setAlert({ type: 'error', msg: 'All fields are required.' });
+      return;
+    }
+    setSaving(true);
+    try {
+      const res = await api.post('/api/sources', newSource);
+      if (res.error) throw new Error(res.error);
+      onSaved();
+    } catch(e) { setAlert({ type: 'error', msg: e.message }); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal">
+        <div className="modal-header">
+          <span className="modal-title">Add Source</span>
+          <button className="btn btn-ghost btn-icon btn-sm" onClick={onClose}><Icon name="close"/></button>
+        </div>
+        <div className="modal-body">
+          {alert && <Alert type={alert.type} onClose={() => setAlert(null)}>{alert.msg}</Alert>}
+          <div className="form-group">
+            <label className="form-label">Name</label>
+            <input className="form-input" placeholder="e.g. CC India WA Group" value={newSource.name} onChange={e => setNewSource(p => ({...p, name: e.target.value}))}/>
+          </div>
+          <div className="form-group">
+            <label className="form-label">Source ID</label>
+            <input className="form-input" placeholder="WhatsApp JID, Telegram channel ID, subreddit..." value={newSource.source_id} onChange={e => setNewSource(p => ({...p, source_id: e.target.value}))}/>
+          </div>
+          <div className="form-group">
+            <label className="form-label">Type</label>
+            {loadingCats ? (
+              <div style={{display:'flex',alignItems:'center',gap:'var(--sp-2)',padding:'var(--sp-2) 0',color:'var(--text-muted)',fontSize:'var(--text-sm)'}}>
+                <Spinner/> Loading categories...
+              </div>
+            ) : (
+              <select className="form-select" value={newSource.type} onChange={e => setNewSource(p => ({...p, type: e.target.value}))}>
+                <option value="">Select type...</option>
+                {allTypeOptions.map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+            )}
+            <div className="form-hint">Format: {'{category-slug}'}-{'{platform}'} &nbsp;·&nbsp; Platforms: whatsapp, telegram, reddit, youtube, forum</div>
+          </div>
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" onClick={addSource} disabled={saving || loadingCats}>{saving ? <Spinner/> : <><Icon name="check" size={16}/>Add Source</>}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function SourcesPage({ sources, categories, onReload }) {
   const [filter, setFilter] = useState('');
   const [typeFilter, setTypeFilter] = useState('all');
   const [alert, setAlert] = useState(null);
   const [showAddModal, setShowAddModal] = useState(false);
-  const [newSource, setNewSource] = useState({ name: '', source_id: '', type: '' });
-  const [saving, setSaving] = useState(false);
-
-  // FIX #2: build types dynamically from all categories
-  const dynamicTypes = buildSourceTypes(categories);
-  const existingTypes = Array.from(new Set(sources.map(s => s.type)));
-  // merge and deduplicate: show all dynamic types + any existing types not covered
-  const allTypeOptions = Array.from(new Set([...dynamicTypes, ...existingTypes]));
 
   const filterTypes = ['all', ...Array.from(new Set(sources.map(s => s.type)))];
   const filtered = sources.filter(s => {
@@ -429,50 +495,22 @@ function SourcesPage({ sources, categories, onReload }) {
     onReload();
   };
 
-  const addSource = async () => {
-    if (!newSource.name || !newSource.source_id || !newSource.type) { setAlert({ type: 'error', msg: 'All fields required.' }); return; }
-    setSaving(true);
-    try {
-      const res = await api.post('/api/sources', newSource);
-      if (res.error) throw new Error(res.error);
-      setShowAddModal(false);
-      setNewSource({ name: '', source_id: '', type: '' });
-      setAlert({ type: 'success', msg: 'Source added.' });
-      onReload();
-    } catch(e) { setAlert({ type: 'error', msg: e.message }); }
-    finally { setSaving(false); }
-  };
-
   return (
     <div>
       {alert && <Alert type={alert.type} onClose={() => setAlert(null)}>{alert.msg}</Alert>}
+
+      {/* FIX #2: AddSourceModal is now its own component that self-fetches categories */}
       {showAddModal && (
-        <div className="modal-backdrop" onClick={e => e.target === e.currentTarget && setShowAddModal(false)}>
-          <div className="modal">
-            <div className="modal-header">
-              <span className="modal-title">Add Source</span>
-              <button className="btn btn-ghost btn-icon btn-sm" onClick={() => setShowAddModal(false)}><Icon name="close"/></button>
-            </div>
-            <div className="modal-body">
-              <div className="form-group"><label className="form-label">Name</label><input className="form-input" placeholder="e.g. CC India WA Group" value={newSource.name} onChange={e => setNewSource(p => ({...p, name: e.target.value}))}/></div>
-              <div className="form-group"><label className="form-label">Source ID</label><input className="form-input" placeholder="WhatsApp JID, Telegram channel ID, subreddit..." value={newSource.source_id} onChange={e => setNewSource(p => ({...p, source_id: e.target.value}))}/></div>
-              <div className="form-group">
-                <label className="form-label">Type</label>
-                <select className="form-select" value={newSource.type} onChange={e => setNewSource(p => ({...p, type: e.target.value}))}>
-                  <option value="">Select type...</option>
-                  {/* FIX #2: dynamically generated from categories */}
-                  {allTypeOptions.map(t => <option key={t} value={t}>{t}</option>)}
-                </select>
-                <div className="form-hint">Format: {'{category-slug}'}-{'{platform}'} &nbsp;·&nbsp; Platforms: whatsapp, telegram, reddit, youtube, forum</div>
-              </div>
-            </div>
-            <div className="modal-footer">
-              <button className="btn btn-secondary" onClick={() => setShowAddModal(false)}>Cancel</button>
-              <button className="btn btn-primary" onClick={addSource} disabled={saving}>{saving ? <Spinner/> : <><Icon name="check" size={16}/>Add Source</>}</button>
-            </div>
-          </div>
-        </div>
+        <AddSourceModal
+          onClose={() => setShowAddModal(false)}
+          onSaved={() => {
+            setShowAddModal(false);
+            setAlert({ type: 'success', msg: 'Source added successfully.' });
+            onReload();
+          }}
+        />
       )}
+
       <div style={{display:'flex',gap:'var(--sp-3)',marginBottom:'var(--sp-5)',flexWrap:'wrap'}}>
         <input className="form-input" style={{maxWidth:260}} placeholder="Search sources..." value={filter} onChange={e => setFilter(e.target.value)}/>
         <select className="form-select" style={{maxWidth:200}} value={typeFilter} onChange={e => setTypeFilter(e.target.value)}>
@@ -507,7 +545,6 @@ function SourcesPage({ sources, categories, onReload }) {
 }
 
 // ---- COOKIES PAGE ---- //
-// FIX #4: added Reddit to SITES, updated API paths to /api/cookies
 function CookiesPage() {
   const [cookies, setCookies] = useState({});
   const [loading, setLoading] = useState(true);
@@ -523,7 +560,6 @@ function CookiesPage() {
 
   const loadCookies = async () => {
     try {
-      // FIX #4: call /api/cookies (new unified endpoint)
       const data = await api.get('/api/cookies');
       const map = {};
       for (const item of data) map[item.site] = item;
@@ -541,7 +577,6 @@ function CookiesPage() {
       let parsed;
       try { parsed = JSON.parse(text); }
       catch (e) {
-        // Netscape cookie format (.txt)
         parsed = text.split('\n')
           .filter(l => !l.startsWith('#') && l.trim())
           .map(line => {
@@ -551,7 +586,6 @@ function CookiesPage() {
           }).filter(c => c.name);
       }
       if (!Array.isArray(parsed) || parsed.length === 0) throw new Error('No valid cookies found in file.');
-      // FIX #4: POST to /api/cookies
       const res = await api.post('/api/cookies', { site, cookies: parsed });
       if (res.error) throw new Error(res.error);
       setAlert({ type: 'success', msg: `✅ ${parsed.length} cookies saved for ${site}!` });
@@ -561,7 +595,6 @@ function CookiesPage() {
 
   const deleteCookies = async (site) => {
     if (!confirm(`Delete cookies for ${site}?`)) return;
-    // FIX #4: DELETE /api/cookies/:site
     await api.delete(`/api/cookies/${site}`);
     setAlert({ type: 'success', msg: `Cookies cleared for ${site}.` });
     loadCookies();
@@ -613,7 +646,6 @@ function CookiesPage() {
 }
 
 // ---- CATEGORIES PAGE ---- //
-// FIX #3: added AddCategoryModal and "Add Category" button
 function AddCategoryModal({ onClose, onSaved }) {
   const [form, setForm] = useState({ slug: '', display_name: '', bot_token: '', chat_id: '', ai_prompt: '' });
   const [saving, setSaving] = useState(false);
@@ -672,6 +704,9 @@ function AddCategoryModal({ onClose, onSaved }) {
   );
 }
 
+// FIX #1: CategoriesPage — page-level header row with Add Category button
+// is now rendered ABOVE the card grid, outside the card content flow,
+// so it is always visible regardless of how many category cards exist.
 function CategoriesPage({ categories, onReload }) {
   const [alert, setAlert] = useState(null);
   const [editModal, setEditModal] = useState(null);
@@ -722,7 +757,6 @@ function CategoriesPage({ categories, onReload }) {
     <div>
       {alert && <Alert type={alert.type} onClose={() => setAlert(null)}>{alert.msg}</Alert>}
 
-      {/* FIX #3: Add Category modal */}
       {showAddModal && (
         <AddCategoryModal
           onClose={() => setShowAddModal(false)}
@@ -751,8 +785,19 @@ function CategoriesPage({ categories, onReload }) {
         </div>
       )}
 
-      {/* FIX #3: Add Category button in header area */}
-      <div style={{display:'flex',justifyContent:'flex-end',marginBottom:'var(--sp-5)'}}>
+      {/* FIX #1: Dedicated action bar always rendered at the top, never
+          buried inside the card grid or dependent on card count. */}
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        marginBottom: 'var(--sp-5)',
+        paddingBottom: 'var(--sp-4)',
+        borderBottom: '1px solid var(--border)'
+      }}>
+        <span style={{fontSize:'var(--text-sm)',color:'var(--text-muted)'}}>
+          {categories.length} {categories.length === 1 ? 'category' : 'categories'} configured
+        </span>
         <button className="btn btn-primary" onClick={() => setShowAddModal(true)}>
           <Icon name="plus" size={16}/>Add Category
         </button>
@@ -809,7 +854,6 @@ function App() {
 
   const loadAll = useCallback(async () => {
     try {
-      // FIX #5: /api/health now exists and returns scraper_health rows
       const [cats, srcs, hlth] = await Promise.all([
         api.get('/api/categories'),
         api.get('/api/sources'),
@@ -818,7 +862,7 @@ function App() {
       setCategories(Array.isArray(cats) ? cats : []);
       setSources(Array.isArray(srcs) ? srcs : []);
       setHealth(Array.isArray(hlth) ? hlth : []);
-    } catch(e) { console.error('Failed to load data', e); }
+    } catch(e) { console.error('loadAll error', e); }
     finally { setLoading(false); }
   }, []);
 
@@ -830,96 +874,127 @@ function App() {
     document.documentElement.setAttribute('data-theme', next);
   };
 
-  const navItems = [
-    { id: 'overview',    label: 'Overview',    icon: 'dashboard' },
-    { id: 'schedule',    label: 'Schedule',     icon: 'schedule' },
-    { id: 'sources',     label: 'Sources',      icon: 'sources', badge: sources.filter(s=>!s.is_active).length || null },
-    { id: 'categories',  label: 'Categories',   icon: 'settings' },
-    { id: 'cookies',     label: 'Cookies',      icon: 'cookies' },
-    { id: 'health',      label: 'Health',       icon: 'health', badge: health.filter(h=>h.consecutive_failures>=3).length || null },
+  const NAV = [
+    { id: 'overview',   label: 'Overview',   icon: 'dashboard' },
+    { id: 'schedule',   label: 'Schedule',   icon: 'schedule' },
+    { id: 'sources',    label: 'Sources',    icon: 'sources' },
+    { id: 'categories', label: 'Categories', icon: 'settings' },
+    { id: 'cookies',    label: 'Cookies',    icon: 'cookies' },
+    { id: 'health',     label: 'Health',     icon: 'health' },
   ];
 
-  const pageTitles = { overview: 'Overview', schedule: 'Schedule', sources: 'Sources', categories: 'Categories', cookies: 'Cookies', health: 'Health' };
-  const pageSubtitles = {
-    overview: 'System status and active categories',
-    schedule: 'Per-category briefing schedules (IST)',
-    sources: 'Manage data sources across all categories',
-    categories: 'Configure briefing categories and bots',
-    cookies: 'Upload cookies for gated sources',
-    health: 'Scraper health and failure tracking',
+  const PAGE_TITLES = {
+    overview:   { title: 'Overview',    subtitle: 'System status at a glance' },
+    schedule:   { title: 'Schedule',    subtitle: 'Manage briefing time slots per category' },
+    sources:    { title: 'Sources',     subtitle: 'Manage data sources across all categories' },
+    categories: { title: 'Categories',  subtitle: 'Configure briefing categories and bots' },
+    cookies:    { title: 'Cookies',     subtitle: 'Manage session cookies for scrapers' },
+    health:     { title: 'Health',      subtitle: 'Live scraper health feed' },
   };
 
-  if (loading) return (
-    <div data-theme={theme} className="full-page-loader">
-      <div className="spinner" style={{width:32,height:32,borderWidth:3}}></div>
-      <span>Loading Brief Agent...</span>
-    </div>
-  );
+  const currentTitle = PAGE_TITLES[page] || PAGE_TITLES.overview;
+
+  if (loading) {
+    return (
+      <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100vh',flexDirection:'column',gap:'var(--sp-4)'}}>
+        <Spinner/>
+        <span style={{color:'var(--text-muted)',fontSize:'var(--text-sm)'}}>Loading Brief Agent...</span>
+      </div>
+    );
+  }
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${sidebarOpen ? 'sidebar-open' : ''}`}>
       {/* Sidebar */}
-      <nav className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
-        <div className="sidebar-logo">
-          <div className="sidebar-logo-icon">📊</div>
+      <aside className="sidebar">
+        <div className="sidebar-brand">
+          <div className="sidebar-logo">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+              <rect x="3" y="3" width="8" height="8" rx="1.5" fill="var(--accent)"/>
+              <rect x="13" y="3" width="8" height="8" rx="1.5" fill="var(--accent)" opacity="0.6"/>
+              <rect x="3" y="13" width="8" height="8" rx="1.5" fill="var(--accent)" opacity="0.6"/>
+              <rect x="13" y="13" width="8" height="8" rx="1.5" fill="var(--accent)" opacity="0.3"/>
+            </svg>
+          </div>
           <div>
-            <div className="sidebar-logo-text">Brief Agent</div>
-            <div className="sidebar-logo-sub">AI Briefing Dashboard</div>
+            <div className="sidebar-brand-name">Brief Agent</div>
+            <div className="sidebar-brand-sub">AI Briefing Dashboard</div>
           </div>
         </div>
-        <div className="sidebar-nav">
-          <div className="nav-section-label">Main</div>
-          {navItems.map(item => (
+
+        <div className="sidebar-section-label">MAIN</div>
+        <nav className="sidebar-nav">
+          {NAV.map(item => (
             <button
               key={item.id}
               className={`nav-item ${page === item.id ? 'active' : ''}`}
               onClick={() => { setPage(item.id); setSidebarOpen(false); }}
             >
-              <span className="nav-item-icon"><Icon name={item.icon} size={16}/></span>
+              <Icon name={item.icon} size={16}/>
               {item.label}
-              {item.badge > 0 && <span className="nav-badge">{item.badge}</span>}
             </button>
           ))}
-        </div>
-        <div className="sidebar-footer">
-          <button className="theme-toggle" onClick={toggleTheme}>
-            <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={14}/>
+        </nav>
+
+        <div className="sidebar-bottom">
+          <button className="btn btn-ghost" style={{width:'100%',justifyContent:'flex-start',gap:'var(--sp-2)',fontSize:'var(--text-sm)'}} onClick={toggleTheme}>
+            <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={16}/>
             {theme === 'dark' ? 'Light Mode' : 'Dark Mode'}
           </button>
         </div>
-      </nav>
+      </aside>
 
-      {/* Main */}
+      {sidebarOpen && <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)}/>}
+
+      {/* Main content */}
       <div className="main-content">
         <header className="page-header">
-          <button className="btn btn-ghost btn-icon mobile-menu-btn" onClick={() => setSidebarOpen(!sidebarOpen)}><Icon name="menu"/></button>
+          <button className="btn btn-ghost btn-icon mobile-menu-btn" onClick={() => setSidebarOpen(true)}>
+            <Icon name="menu"/>
+          </button>
           <div>
-            <div className="page-title">{pageTitles[page]}</div>
-            <div className="page-subtitle">{pageSubtitles[page]}</div>
+            <h1 className="page-title">{currentTitle.title}</h1>
+            <p className="page-subtitle">{currentTitle.subtitle}</p>
           </div>
-          <div className="header-actions">
-            <button className="btn btn-secondary btn-sm" onClick={loadAll}><Icon name="refresh" size={14}/>Refresh</button>
+          <div style={{marginLeft:'auto',display:'flex',gap:'var(--sp-2)'}}>
+            <button className="btn btn-secondary btn-sm" onClick={loadAll}>
+              <Icon name="refresh" size={14}/>Refresh
+            </button>
           </div>
         </header>
 
-        <main className="page-body">
-          {page === 'overview'   && <OverviewPage categories={categories} sources={sources} health={health}/>}
-          {page === 'schedule'   && <SchedulePage categories={categories} scheduler={scheduler}/>}
-          {/* FIX #2: pass categories prop so source types are dynamically generated */}
-          {page === 'sources'    && <SourcesPage sources={sources} categories={categories} onReload={loadAll}/>}
-          {page === 'categories' && <CategoriesPage categories={categories} onReload={loadAll}/>}
-          {page === 'cookies'    && <CookiesPage/>}
+        <main className="page-content">
+          {page === 'overview'   && <OverviewPage   categories={categories} sources={sources} health={health} />}
+          {page === 'schedule'   && <SchedulePage   categories={categories} scheduler={scheduler} />}
+          {page === 'sources'    && <SourcesPage    sources={sources} categories={categories} onReload={loadAll} />}
+          {page === 'categories' && <CategoriesPage categories={categories} onReload={loadAll} />}
+          {page === 'cookies'    && <CookiesPage />}
           {page === 'health'     && (
             <div className="card">
-              <div className="card-header"><span className="card-title">All Scrapers</span></div>
+              <div className="card-header"><span className="card-title">Scraper Health Feed</span></div>
               <div className="card-body">
-                {health.length === 0 ? (
-                  <div className="empty-state"><div className="empty-state-icon">❤️</div><h3>No health data yet</h3><p>Scraper health records appear after the first run. Data populates as each scraper completes its cycle.</p></div>
-                ) : (
-                  <div className="table-wrap">
-                    <table>
-                      <thead><tr><th>Scraper</th><th>Last Success</th><th>Last Failure</th><th>Failures</th><th>Last Error</th></tr></thead>
-                      <tbody>
-                        {health.map(h => (
-                          <tr key={h.scraper_name}>
-                            <td><span className={`status-dot ${h.consecutive_failures===0?'green':h.consecutive_failures
+                {health.length === 0
+                  ? <div className="empty-state"><div className="empty-state-icon">❤️</div><h3>No health data yet</h3><p>Health data appears after the first scraper run.</p></div>
+                  : <div className="health-feed">
+                      {health.map(h => (
+                        <div key={h.scraper_name} className="health-item">
+                          <span className={`status-dot ${h.consecutive_failures === 0 ? 'green' : h.consecutive_failures < 3 ? 'yellow' : 'red'}`}></span>
+                          <span className="health-item-name">{h.scraper_name}</span>
+                          {h.consecutive_failures > 0 && <span className="health-item-failures">{h.consecutive_failures}x failures</span>}
+                          <span className="health-item-time">{h.last_success_at ? new Date(h.last_success_at + 'Z').toLocaleString('en-IN',{timeZone:'Asia/Kolkata'}) : 'Never succeeded'}</span>
+                          {h.last_error && <span style={{fontSize:'var(--text-xs)',color:'var(--red)',marginLeft:'auto',maxWidth:300,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{h.last_error}</span>}
+                        </div>
+                      ))}
+                    </div>
+                }
+              </div>
+            </div>
+          )}
+        </main>
+      </div>
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App/>);
