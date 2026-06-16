@@ -26,7 +26,22 @@ class TelegramBotDispatcher {
     
     // Enable interactive polling only if database & summarizer are provided
     this.interactive = !!(database && summarizer);
-    this.bot = new Telegraf(botToken);
+    
+    let agent;
+    const proxyUrl = process.env.TELEGRAM_PROXY;
+    if (proxyUrl) {
+      if (proxyUrl.startsWith('socks')) {
+        const { SocksProxyAgent } = require('socks-proxy-agent');
+        agent = new SocksProxyAgent(proxyUrl);
+        logger.info(`🔌 Routing Telegram Bot through SOCKS proxy: ${proxyUrl}`);
+      } else {
+        const { HttpsProxyAgent } = require('https-proxy-agent');
+        agent = new HttpsProxyAgent(proxyUrl);
+        logger.info(`🔌 Routing Telegram Bot through HTTP proxy: ${proxyUrl}`);
+      }
+    }
+
+    this.bot = new Telegraf(botToken, agent ? { telegram: { agent } } : undefined);
 
     if (this.interactive) {
       this._setupCommands();

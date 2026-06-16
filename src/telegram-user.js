@@ -33,10 +33,29 @@ class TelegramUserListener {
       initialSession = fs.readFileSync(this.sessionPath, 'utf8').trim();
     }
     
-    this.session = new StringSession(initialSession);
-    this.client = new TelegramClient(this.session, this.apiId, this.apiHash, {
+    const clientOptions = {
       connectionRetries: 5,
-    });
+    };
+
+    const proxyUrl = process.env.TELEGRAM_PROXY;
+    if (proxyUrl) {
+      const url = require('url');
+      const parsed = url.parse(proxyUrl);
+      clientOptions.proxy = {
+        ip: parsed.hostname,
+        port: parseInt(parsed.port, 10),
+        socksType: 5,
+      };
+      if (parsed.auth) {
+        const [username, password] = parsed.auth.split(':');
+        clientOptions.proxy.username = username;
+        clientOptions.proxy.password = password;
+      }
+      logger.info(`🔌 Routing Telegram User client through proxy: ${parsed.hostname}:${parsed.port}`);
+    }
+
+    this.session = new StringSession(initialSession);
+    this.client = new TelegramClient(this.session, this.apiId, this.apiHash, clientOptions);
     
     this.isReady = false;
     this.tempPhone = null;

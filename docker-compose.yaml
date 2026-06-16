@@ -32,6 +32,7 @@ services:
       - TELEGRAM_API_ID=${TELEGRAM_API_ID}
       - TELEGRAM_API_HASH=${TELEGRAM_API_HASH}
       - FLARESOLVERR_URL=${FLARESOLVERR_URL:-http://flaresolverr:8191/v1}
+      - TELEGRAM_PROXY=socks5://warp-proxy:9091
     logging:
       driver: "json-file"
       options:
@@ -43,6 +44,8 @@ services:
       timeout: 10s
       retries: 3
       start_period: 45s
+    depends_on:
+      - warp-proxy
 
   flaresolverr:
     image: ghcr.io/flaresolverr/flaresolverr:latest
@@ -55,6 +58,15 @@ services:
     ports:
       - "8191:8191"
     restart: unless-stopped
+
+  warp-proxy:
+    image: monius/docker-warp-socks:latest
+    container_name: warp-proxy
+    restart: unless-stopped
+    security_opt:
+      - sysctl:net.ipv4.conf.all.src_valid_mark=1
+    cap_add:
+      - NET_ADMIN
 
 volumes:
   cc_brief_data_test:
