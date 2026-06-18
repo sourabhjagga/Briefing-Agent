@@ -691,7 +691,7 @@ function CookiesPage() {
 
 // ---- CATEGORIES PAGE ---- //
 function AddCategoryModal({ onClose, onSaved }) {
-  const [form, setForm] = useState({ slug: '', display_name: '', bot_token: '', chat_id: '', ai_prompt: '', delivery_channel: 'telegram' });
+  const [form, setForm] = useState({ slug: '', display_name: '', bot_token: '', chat_id: '', ai_prompt: '', delivery_channel: 'telegram', whatsapp_target_id: '' });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -741,6 +741,10 @@ function AddCategoryModal({ onClose, onSaved }) {
               <option value="whatsapp">WhatsApp</option>
             </select>
           </div>
+          <div className="form-group" style={{display: form.delivery_channel === 'whatsapp' ? 'block' : 'none'}}>
+            <label className="form-label">WhatsApp Target ID</label>
+            <input className="form-input" placeholder="e.g., 1234567890@g.us" value={form.whatsapp_target_id} onChange={e => set('whatsapp_target_id', e.target.value)}/>
+          </div>
           <div className="form-group">
             <label className="form-label">AI Prompt <span style={{fontWeight:400,textTransform:'none',color:'var(--text-faint)'}}>(optional)</span></label>
             <textarea className="form-textarea" placeholder="You are a briefing agent for..." value={form.ai_prompt} onChange={e => set('ai_prompt', e.target.value)}/>
@@ -755,7 +759,7 @@ function AddCategoryModal({ onClose, onSaved }) {
   );
 }
 
-function CategoriesPage({ categories, onReload }) {
+function CategoriesPage({ categories, onReload, whatsappStatus }) {
   const [alert, setAlert] = useState(null);
   const [editModal, setEditModal] = useState(null);
   const [showAddModal, setShowAddModal] = useState(false);
@@ -823,6 +827,7 @@ function CategoriesPage({ categories, onReload }) {
               <div className="form-group"><label className="form-label">Display Name</label><input className="form-input" value={editModal.display_name} onChange={e => setEditModal(p => ({...p, display_name: e.target.value}))}/></div>
               <div className="form-group"><label className="form-label">Telegram Bot Token</label><input className="form-input" type="password" value={editModal.bot_token || ''} onChange={e => setEditModal(p => ({...p, bot_token: e.target.value}))}/></div>
               <div className="form-group"><label className="form-label">Telegram Chat ID</label><input className="form-input" value={editModal.chat_id || ''} onChange={e => setEditModal(p => ({...p, chat_id: e.target.value}))}/></div>
+              <div className="form-group" style={{display: editModal.delivery_channel === 'whatsapp' ? 'block' : 'none'}}><label className="form-label">WhatsApp Target ID</label><input className="form-input" value={editModal.whatsapp_target_id || ''} onChange={e => setEditModal(p => ({...p, whatsapp_target_id: e.target.value}))}/></div>
               <div className="form-group">
                 <label className="form-label">Delivery Channel</label>
                 <select className="form-input" value={editModal.delivery_channel || 'telegram'} onChange={e => setEditModal(p => ({...p, delivery_channel: e.target.value}))}>
@@ -830,6 +835,15 @@ function CategoriesPage({ categories, onReload }) {
                   <option value="whatsapp">WhatsApp</option>
                 </select>
               </div>
+              {editModal.delivery_channel === 'whatsapp' && whatsappStatus.qr && (
+                <div className="form-group">
+                  <label className="form-label">Scan QR for WhatsApp</label>
+                  <div style={{display:'flex',justifyContent:'center',padding:'var(--sp-4)',background:'var(--surface-1)',borderRadius:'var(--r-md)'}}>
+                    <img src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(whatsappStatus.qr)}`} alt="WhatsApp QR Code" />
+                  </div>
+                  <small className="form-text text-muted text-center d-block" style={{marginTop:'var(--sp-2)'}}>This QR code refreshes automatically.</small>
+                </div>
+              )}
               <div className="form-group"><label className="form-label">AI Prompt</label><textarea className="form-textarea" value={editModal.ai_prompt || ''} onChange={e => setEditModal(p => ({...p, ai_prompt: e.target.value}))}/></div>
             </div>
             <div className="modal-footer">
@@ -1021,7 +1035,7 @@ function App() {
           {page === 'overview'   && <OverviewPage   categories={categories} sources={sources} health={health} />}
           {page === 'schedule'   && <SchedulePage   categories={categories} scheduler={scheduler} />}
           {page === 'sources'    && <SourcesPage    sources={sources} categories={categories} onReload={loadAll} />}
-          {page === 'categories' && <CategoriesPage categories={categories} onReload={loadAll} />}
+          {page === 'categories' && <CategoriesPage categories={categories} onReload={loadAll} whatsappStatus={health.find(h => h.whatsapp)?.whatsapp || {}} />}
           {page === 'cookies'    && <CookiesPage />}
           {page === 'health'     && (
             <div className="card">
