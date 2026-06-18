@@ -416,9 +416,6 @@ class WhatsAppListener {
     return Object.keys(this.chatNameMap).map(id => ({
       id,
       name: this.chatNameMap[id]
-    return Object.keys(this.chatNameMap).map(id => ({
-      id,
-      name: this.chatNameMap[id]
     }));
   }
 
